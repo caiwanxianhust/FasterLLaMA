@@ -2,6 +2,7 @@
 #include "error.cuh"
 #include <cub/cub.cuh>
 #include <assert.h>
+#include <cuda_fp16.h>
 
 namespace tinycudallama {
 
@@ -59,32 +60,64 @@ __inline__ __device__
 
 template <typename DataType>
 __global__ void resNormKernel(DataType* __restrict__ output, const DataType* __restrict__ input, 
-    const DataType* __restrict__ gamma, const DataType eps, const int hidden_uints)
+    const DataType* __restrict__ gamma, const float eps, const int hidden_units)
 {
-    const int offset = blockIdx.x * hidden_uints;
+    const int offset = blockIdx.x * hidden_units;
     float mean;
     float val = 0.0f;
-    for (int i=threadIdx.x; i<hidden_uints; i+=blockDim.x) {
+    for (int i=threadIdx.x; i<hidden_units; i+=blockDim.x) {
         val += input[offset + i] * input[offset + i];
     }
     __syncthreads();
 
     val = blockAllReduce<SumOp, float>(val);
-    mean = rsqrtf(val / hidden_uints + eps);
+    mean = rsqrtf(val / hidden_units + eps);
     // __syncthreads();
 
-    for (int i=threadIdx.x; i<hidden_uints; i+=blockDim.x) {
+    for (int i=threadIdx.x; i<hidden_units; i+=blockDim.x) {
         output[offset + i] = (DataType)(mean * input[offset + i] * gamma[i]);
     }
 }
 
+template <>
+__global__ void resNormKernel(half* __restrict__ output, const half* __restrict__ input, 
+    const half* __restrict__ gamma, const float eps, const int hidden_units)
+{
+    const int offset = blockIdx.x * hidden_units;
+    half2 *out_ptr = (half2 *)(output + offset);
+    const half2 *inp_ptr = (const half2 *)(input + offset);
+    const half2 *gamma_ptr = (const half2 *)gamma;
+    
+    float mean = 0.0f;
+    float2 val;
+    
+    for (int i=threadIdx.x; i<(hidden_units >> 1); i+=blockDim.x) {
+        val = __half22float2(inp_ptr[i]);
+        mean += val.x * val.x + val.y * val.y;
+    }
+    __syncthreads();
+
+    mean = blockAllReduce<SumOp, float>(mean);
+    mean = rsqrtf(mean / hidden_units + eps);
+
+    float2 scale;
+
+    for (int i=threadIdx.x; i<(hidden_units >> 1); i+=blockDim.x) {
+        val = __half22float2(inp_ptr[i]);
+        scale = __half22float2(gamma_ptr[i]);
+        val.x *= (mean * scale.x);
+        val.y *= (mean * scale.y);
+        out_ptr[i] = __float22half2_rn(val);
+    }
+}
+
 template <typename DataType>
-void launchResNormKernel(DataType* output, const DataType* input, 
-    const DataType* gamma, const DataType eps, const int m, const int n)
+void launchResNormKernel(DataType* output, const DataType* input, const DataType* gamma, const float eps, 
+    const int m, const int n, cudaStream_t stream = 0)
 {
     dim3 grid(m);
     dim3 block(block_size);
-    resNormKernel<DataType><<<grid, block>>>(output, input, gamma, eps, n);
+    resNormKernel<DataType><<<grid, block, 0, stream>>>(output, input, gamma, eps, n);
 }
 
 
@@ -124,6 +157,34 @@ static void rms_norm_f32_cuda(const float * x, float * dst, const int ncols, con
     //也就是说一个block处理一个row的数据，即每32个线程处理一行数据 ，共计nrows行
     rms_norm_f32<<<nrows, block_dims, 0, stream>>>(x, dst, ncols, gamma, eps);
 }
+
+/**
+ * grid(seq_len)  block(block_size)
+*/
+__global__ void precomputeFreqsCis(float *freq_cis, const int size_per_head)
+{
+    int offset = blockIdx.x * size_per_head;
+    for (int i=threadIdx.x; i<(size_per_head >> 1); i+=blockDim.x) {
+        float val = i * (-2.0f) / size_per_head;
+        float theta = __powf(1e4f, val)  * blockIdx.x;
+        freq_cis[offset + 2 * i] = __cosf(theta);
+        freq_cis[offset + 2 * i + 1] = __sinf(theta);
+
+        printf("blockIdx: %d  threadIdx: %d  theta: %g\n", blockIdx.x, threadIdx.x, theta);
+    }
+}
+
+void launchPrecomputeFreqsCis(float *freq_cis, const int size_per_head, const int seq_len, cudaStream_t stream = 0)
+{
+    dim3 grid(seq_len);
+    dim3 block(block_size);
+    precomputeFreqsCis<<<grid, block, 0, stream>>>(freq_cis, size_per_head);
+}
+
+
+
+
+
 
     
 }   // tinycudallama
