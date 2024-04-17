@@ -61,20 +61,20 @@ template <typename DataType>
 __global__ void resNormKernel(DataType* __restrict__ output, const DataType* __restrict__ input, 
     const DataType* __restrict__ gamma, const DataType eps, const int hidden_uints)
 {
-    const DataType *inp = input + blockIdx.x * hidden_uints;
+    const int offset = blockIdx.x * hidden_uints;
     float mean;
     float val = 0.0f;
     for (int i=threadIdx.x; i<hidden_uints; i+=blockDim.x) {
-        val += inp[i] * inp[i];
+        val += input[offset + i] * input[offset + i];
     }
     __syncthreads();
 
-    val = blockAllReduce<DataType, SumOp>(val);
+    val = blockAllReduce<SumOp, float>(val);
     mean = rsqrtf(val / hidden_uints + eps);
-    __syncthreads();
+    // __syncthreads();
 
     for (int i=threadIdx.x; i<hidden_uints; i+=blockDim.x) {
-        output[blockIdx.x * hidden_uints + i] = mean * inp[i] * gamma[i];
+        output[offset + i] = (DataType)(mean * input[offset + i] * gamma[i]);
     }
 }
 
@@ -87,16 +87,8 @@ void launchResNormKernel(DataType* output, const DataType* input,
     resNormKernel<DataType><<<grid, block>>>(output, input, gamma, eps, n);
 }
 
-#define WARP_SIZE 32
-//call kernel
-static void rms_norm_f32_cuda(const float * x, float * dst, const int ncols, const int nrows, const float * gamma, const float eps, cudaStream_t stream = 0) {
-    assert(ncols % WARP_SIZE == 0);
-    const dim3 block_dims(WARP_SIZE, 1, 1); //(32,1,1)
-    //所以调用的cuda的gridDim =(nrows,1,1) ,blockDim = (32,1,1)
-    //也就是说一个block处理一个row的数据，即每32个线程处理一行数据 ，共计nrows行
-    rms_norm_f32<<<nrows, block_dims, 0, stream>>>(x, dst, ncols, gamma, eps);
-}
 
+#define WARP_SIZE 32
 //kernel code
 static __global__ void rms_norm_f32(const float * x, float * dst, const int ncols, const float * gamma, const float eps) {
     const int row = blockIdx.x*blockDim.y + threadIdx.y;
@@ -122,6 +114,15 @@ static __global__ void rms_norm_f32(const float * x, float * dst, const int ncol
     for (int col = tid; col < ncols; col += WARP_SIZE) {
         dst[row*ncols + col] = scale * x[row*ncols + col] * gamma[col];
     }
+}
+
+//call kernel
+static void rms_norm_f32_cuda(const float * x, float * dst, const int ncols, const int nrows, const float * gamma, const float eps, cudaStream_t stream = 0) {
+    assert(ncols % WARP_SIZE == 0);
+    const dim3 block_dims(WARP_SIZE, 1, 1); //(32,1,1)
+    //所以调用的cuda的gridDim =(nrows,1,1) ,blockDim = (32,1,1)
+    //也就是说一个block处理一个row的数据，即每32个线程处理一行数据 ，共计nrows行
+    rms_norm_f32<<<nrows, block_dims, 0, stream>>>(x, dst, ncols, gamma, eps);
 }
 
     

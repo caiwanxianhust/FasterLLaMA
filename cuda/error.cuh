@@ -1,5 +1,6 @@
 #pragma once
 #include <stdio.h>
+#include <cublas_v2.h>
 
 static const char *_cudaGetErrorEnum(cublasStatus_t error)
 {
