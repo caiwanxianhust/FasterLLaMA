@@ -280,24 +280,64 @@ void perChannelQuantizedKernelLauncher(int8_t *dst, const DataType *src, float *
 
 /**
  * 反量化、rope旋转编码、量化、转置
- * Q K: [batch_size, seql_len, head_num, size_per_head]
- * grid(batch_size, seq_len, head_num/warp_num) block(32, warp_num), each warp process size_per_head elements
+ * Q K: [batch_size, seq_len, head_num, size_per_head]
+ * grid(batch_size * 2, seq_len, head_num/warp_num) block(32, warp_num), each warp process size_per_head elements
+ * q_inp_sacle k_inp_scale: [batch_size, seq_len], absmax / 127.0f
+ * q_weight_scale k_weight_scale: [head_num * size_per_head, ], absmax / 127.0f
+ * freq_cis: [max_seq_len, size_per_head]
+ * q_out_scale k_out_scale: [batch_size, seq_len, head_num], absmax / 127.0f
 */
 template <typename DataType>
-__global__ void qkRoteEmbedding(int8_t * __restrict__ q_buf, int8_t * __restrict__ k_buf, const int32_t * __restrict__ Q, 
+__global__ void qkRoteEmbeddingQuantizedTranspose(int8_t * __restrict__ q_buf, int8_t * __restrict__ k_buf, const int32_t * __restrict__ Q, 
     const int32_t * __restrict__ K, const float * __restrict__ q_inp_scale, const float * __restrict__ k_inp_scale, 
     const float * __restrict__ q_weight_scale, const float * __restrict__ k_weight_scale, float * __restrict__ q_out_scale,
-    float * __restrict__ k_out_scale, const int batch_size, const int seq_len, const int head_num, const int size_per_head,
-    const int warp_num)
+    float * __restrict__ k_out_scale, float * __restrict__ freq_cis, const int batch_size, const int seq_len, const int head_num, 
+    const int size_per_head, const int warp_num)
 {
+    const int qk_id = blockIdx.x / batch_size;
     const int batch_id = blockIdx.x;
     const int seq_id = blockIdx.y;
     const int head_id = blockIdx.z * warp_num + threadIdx.y;
-    
-
-
-
-
+    const int offset = batch_id * seq_len * head_num * size_per_head + seq_id * head_num * size_per_head + head_id * size_per_head;
+    float inp_scale_val = (qk_id == 0) ? __ldg(q_inp_scale + batch_id * seq_len + seq_id) : __ldg(k_inp_scale + batch_id * seq_len + seq_id);
+    const int32_t *data_ptr = (qk_id == 0) ? Q + offset : K + offset;
+    const float *weight_scale_ptr = (qk_id == 0) ? q_weight_scale : k_weight_scale;
+    const float *freq_cis_ptr = freq_cis + seq_id * size_per_head;
+    float *out_scale_ptr = (qk_id == 0) ? q_out_scale : k_out_scale;
+    char4 *out_ptr = (qk_id == 0) ? (char4 *)q_buf : (char4 *)k_buf;
+    float4 val, rope_val;
+    char4 out_val;
+    float absmax = 0.0f;
+    const int tid = (threadIdx.x << 2);
+    float out_scale;
+    int target_idx;
+    if (tid < size_per_head) {
+        // dequantized
+        val.x = static_cast<float>(data_ptr[tid]) * inp_scale_val * __ldg(weight_scale_ptr + head_id * size_per_head + tid);
+        val.y = static_cast<float>(data_ptr[tid + 1]) * inp_scale_val * __ldg(weight_scale_ptr + head_id * size_per_head + tid + 1);
+        val.z = static_cast<float>(data_ptr[tid + 2]) * inp_scale_val * __ldg(weight_scale_ptr + head_id * size_per_head + tid + 2);
+        val.w = static_cast<float>(data_ptr[tid + 3]) * inp_scale_val * __ldg(weight_scale_ptr + head_id * size_per_head + tid + 3);
+        // rope embedding
+        rope_val.x = val.x * freq_cis_ptr[tid] - val.y * freq_cis_ptr[tid + 1];
+        rope_val.y = val.y * freq_cis_ptr[tid] + val.x * freq_cis_ptr[tid + 1];
+        rope_val.z = val.z * freq_cis_ptr[tid + 2] - val.w * freq_cis_ptr[tid + 3];
+        rope_val.w = val.w * freq_cis_ptr[tid + 2] - val.z * freq_cis_ptr[tid + 3];
+        // quantized
+        absmax = fmaxf(absmax, fmaxf(rope_val.x, fmaxf(rope_val.y, fmaxf(rope_val.z, rope_val.w))));
+        __syncthreads();
+        absmax = warpAllReduce<MaxOp, float>(absmax);
+        out_scale = 127.0f / absmax;
+        out_val.x = float_to_int8_rn(static_cast<float>(rope_val.x) * out_scale);
+        out_val.y = float_to_int8_rn(static_cast<float>(rope_val.y) * out_scale);
+        out_val.z = float_to_int8_rn(static_cast<float>(rope_val.z) * out_scale);
+        out_val.w = float_to_int8_rn(static_cast<float>(rope_val.w) * out_scale);
+        
+        target_idx = batch_id * head_num * seq_len * size_per_head + head_id * seq_len * size_per_head + seq_id * size_per_head + i;
+        out_ptr[target_idx >> 2] = out_val;
+    }
+    if (threadIdx.x == 0) {
+        out_scale_ptr[batch_id * seq_len * head_num + seq_id * head_num + head_id] = absmax / 127.0f;
+    }
 }
 
     
