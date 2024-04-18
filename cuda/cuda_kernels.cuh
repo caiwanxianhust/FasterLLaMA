@@ -340,5 +340,20 @@ __global__ void qkRoteEmbeddingQuantizedTranspose(int8_t * __restrict__ q_buf, i
     }
 }
 
+template <typename DataType>
+void launchQKRoteEmbeddingQuantizedTranspose(int8_t * q_buf, int8_t * k_buf, const int32_t * Q, 
+    const int32_t * K, const float * q_inp_scale, const float * k_inp_scale, 
+    const float * q_weight_scale, const float * k_weight_scale, float * q_out_scale,
+    float * k_out_scale, float * freq_cis, const int batch_size, const int seq_len, const int head_num, 
+    const int size_per_head, cudaStream_t stream = 0)
+{
+    assert(32 * 4 >= size_per_head);
+    int warp_num = block_size / 32;
+    dim3 grid(batch_size, seq_len, head_num / warp_num);
+    dim3 block(32, warp_num);
+    qkRoteEmbeddingQuantizedTranspose<DataType><<<grid, block, 0, stream>>>(q_buf, k_buf, Q, K, q_inp_scale, k_inp_scale, 
+        q_weight_scale, k_weight_scale, q_out_scale, k_out_scale, freq_cis, batch_size, seq_len, head_num, size_per_head, warp_num);
+}
+
     
 }   // tinycudallama
