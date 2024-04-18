@@ -12,7 +12,7 @@ void printVecInVec(const T *clusters, const int nrows, const int ncols, const in
         printf("[");
         for (int j = 0; j < end_col; ++j)
         {
-            printf("%g  ", (float)clusters[i * ncols + j]);
+            printf("%g  ", static_cast<float>(clusters[i * ncols + j]));
         }
         printf("]\n");
     }
@@ -192,13 +192,54 @@ void testEmbedding()
     delete [] h_from_tensor;
 }
 
+void testPerChannelQuantized()
+{
+    using DataType = float;
+    const int nrows = 8;
+    const int hidden_size = 32;
+    DataType *h_src = new DataType[nrows * hidden_size];
+    for (int i=0; i<nrows*hidden_size; ++i) {
+        h_src[i] = ((i & 1) == 0) ? i : (-1.0f) * i;
+    }
+    printVecInVec(h_src, nrows, hidden_size, nrows, hidden_size, "h_src");
+
+    DataType *d_src;
+    float *d_scale;
+    int8_t *d_dst;
+
+    device_malloc(&d_src, sizeof(DataType) * nrows * hidden_size);
+    device_malloc(&d_scale, sizeof(float) * nrows);
+    device_malloc(&d_dst, sizeof(int8_t) * nrows * hidden_size);
+
+    CHECK_CUDA_ERROR(cudaMemcpy(d_src, h_src, sizeof(DataType) * nrows * hidden_size, cudaMemcpyHostToDevice));
+
+    tinycudallama::perChannelQuantizedKernelLauncher(d_dst, d_src, d_scale, hidden_size, nrows);
+
+    float h_scale[nrows];
+    int8_t *h_dst = new int8_t[nrows * hidden_size];
+    CHECK_CUDA_ERROR(cudaMemcpy(h_scale, d_scale, sizeof(float) * nrows, cudaMemcpyDeviceToHost));
+    CHECK_CUDA_ERROR(cudaMemcpy(h_dst, d_dst, sizeof(int8_t) * nrows * hidden_size, cudaMemcpyDeviceToHost));
+
+    printVecInVec(h_scale, 1, nrows, 1, nrows, "scale");
+    printVecInVec(h_dst, nrows, hidden_size, nrows, hidden_size, "int8_dst");
+
+    CHECK_CUDA_ERROR(cudaFree(d_src));
+    CHECK_CUDA_ERROR(cudaFree(d_scale));
+    CHECK_CUDA_ERROR(cudaFree(d_dst));
+    delete [] h_src;
+    delete [] h_dst;
+}
+
+
 int main()
 {
     // testResNorm();
 
     // testPrecomputeFreqsCis();
 
-    testEmbedding();
+    // testEmbedding();
+
+    testPerChannelQuantized();
 
     return 0;
 }

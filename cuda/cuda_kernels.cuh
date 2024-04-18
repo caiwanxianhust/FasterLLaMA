@@ -231,6 +231,52 @@ void launchEmbeddingLookingUpKernel(DataType * from_tensor, const DataType * emb
     embeddingLookingUpKernel<DataType><<<grid, block, 0, stream>>>(from_tensor, embedding_table, word_ids, hidden_units, seq_len);
 }
 
+static inline __device__ int8_t float_to_int8_rn(float x)
+{
+  uint32_t dst;
+  asm volatile("cvt.rni.sat.s8.f32 %0, %1;"
+               : "=r"(dst)
+               : "f"(x));
+  return reinterpret_cast<const int8_t &>(dst);
+}
+
+template <typename DataType>
+__global__ void perChannelQuantizedKernel(int8_t * __restrict__ dst, const DataType * __restrict__ src, float * __restrict__ scale_ptr, 
+    const int hidden_size)
+{
+    const int offset = blockIdx.x * hidden_size;
+    float absmax = 0.0f;
+    for (int i=(threadIdx.x << 2); i<hidden_size; i+=(blockDim.x << 2)) {
+        absmax = fmaxf(absmax, fabsf(static_cast<float>(__ldg(&src[offset + i]))));
+        absmax = fmaxf(absmax, fabsf(static_cast<float>(__ldg(&src[offset + i + 1]))));
+        absmax = fmaxf(absmax, fabsf(static_cast<float>(__ldg(&src[offset + i + 2]))));
+        absmax = fmaxf(absmax, fabsf(static_cast<float>(__ldg(&src[offset + i + 3]))));
+    }
+    __syncthreads();
+    absmax = blockAllReduce<MaxOp, float>(absmax);
+    float scale = 127.0f / absmax;
+
+    char4 *dst_ptr4 = (char4 *)(dst + offset);
+    char4 tmp;
+    for (int i=(threadIdx.x << 2); i<hidden_size; i+=(blockDim.x << 2)) {
+        tmp.x = float_to_int8_rn(static_cast<float>(__ldg(&src[offset + i])) * scale);
+        tmp.y = float_to_int8_rn(static_cast<float>(__ldg(&src[offset + i + 1])) * scale);
+        tmp.z = float_to_int8_rn(static_cast<float>(__ldg(&src[offset + i + 2])) * scale);
+        tmp.w = float_to_int8_rn(static_cast<float>(__ldg(&src[offset + i + 3])) * scale);
+        dst_ptr4[i >> 2] = tmp;
+    }
+    if (threadIdx.x == 0) {  scale_ptr[blockIdx.x] = absmax / 127.0f;  }
+}
+
+template <typename DataType>
+void perChannelQuantizedKernelLauncher(int8_t *dst, const DataType *src, float *scale_ptr, const int hidden_size, 
+    const int nrows, cudaStream_t stream = 0)
+{
+    dim3 grid(nrows);
+    dim3 block(block_size);
+    perChannelQuantizedKernel<DataType><<<grid, block, 0, stream>>>(dst, src, scale_ptr, hidden_size);
+
+}
 
     
 }   // tinycudallama
