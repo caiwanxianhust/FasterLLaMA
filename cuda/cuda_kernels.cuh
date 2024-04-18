@@ -7,7 +7,7 @@
 namespace tinycudallama {
 
 namespace {
-    constexpr int block_size = 256;
+    constexpr int block_size = 128;
 }
 
 template <typename T>
@@ -159,7 +159,7 @@ static void rms_norm_f32_cuda(const float * x, float * dst, const int ncols, con
 }
 
 /**
- * grid(seq_len)  block(block_size)
+ * grid(seq_len)  block(block_size) for size_per_head/2 >= block_size(128)
 */
 __global__ void precomputeFreqsCis(float *freq_cis, const int size_per_head)
 {
@@ -169,19 +169,41 @@ __global__ void precomputeFreqsCis(float *freq_cis, const int size_per_head)
         float theta = __powf(1e4f, val)  * blockIdx.x;
         freq_cis[offset + 2 * i] = __cosf(theta);
         freq_cis[offset + 2 * i + 1] = __sinf(theta);
+    }
+}
 
-        printf("blockIdx: %d  threadIdx: %d  theta: %g\n", blockIdx.x, threadIdx.x, theta);
+/**
+ * block(32, 4)   each warp compute one row
+*/
+__global__ void warpPrecomputeFreqsCis(float *freq_cis, const int size_per_head, const int seq_len)
+{
+    const int row = blockIdx.x * blockDim.y + threadIdx.y;
+    int offset = row * size_per_head;
+    if (row < seq_len) {
+        for (int i=threadIdx.x; i<(size_per_head >> 1); i+=blockDim.x) {
+            float val = i * (-2.0f) / size_per_head;
+            float theta = __powf(1e4f, val)  * row;
+            freq_cis[offset + 2 * i] = __cosf(theta);
+            freq_cis[offset + 2 * i + 1] = __sinf(theta);
+        }
     }
 }
 
 void launchPrecomputeFreqsCis(float *freq_cis, const int size_per_head, const int seq_len, cudaStream_t stream = 0)
 {
-    dim3 grid(seq_len);
-    dim3 block(block_size);
-    precomputeFreqsCis<<<grid, block, 0, stream>>>(freq_cis, size_per_head);
+    if ((size_per_head / 2) < 128) {
+        int warp_num = block_size / 32;
+        int grid_size = (seq_len + warp_num - 1) / warp_num;
+        dim3 grid(grid_size);
+        dim3 block(32, warp_num);
+        warpPrecomputeFreqsCis<<<grid, block, 0, stream>>>(freq_cis, size_per_head, seq_len);
+    }
+    else {
+        dim3 grid(seq_len);
+        dim3 block(block_size);
+        precomputeFreqsCis<<<grid, block, 0, stream>>>(freq_cis, size_per_head);
+    }
 }
-
-
 
 
 

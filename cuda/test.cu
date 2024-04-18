@@ -23,6 +23,7 @@ template <>
 void printVecInVec(const half *clusters, const int nrows, const int ncols, const int end_row, const int end_col, const char *str)
 {
     printf("%s:\n[\n", str);
+    if (end_row >= nrows || end_col >= ncols) printf("invalid arguments!!!\nend_row >= nrows or end_col >= ncols\n");
     for (int i = 0; i < end_row; ++i)
     {
         printf("[");
@@ -138,7 +139,7 @@ void testResNorm()
 
 void testPrecomputeFreqsCis()
 {
-    const int seq_len = 10;
+    const int seq_len = 4096;
     const int size_per_head = 32;
     float *h_freqsCis = new float[seq_len * size_per_head];
 
