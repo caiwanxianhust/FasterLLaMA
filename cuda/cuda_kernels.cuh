@@ -278,5 +278,27 @@ void perChannelQuantizedKernelLauncher(int8_t *dst, const DataType *src, float *
 
 }
 
+/**
+ * 反量化、rope旋转编码、量化、转置
+ * Q K: [batch_size, seql_len, head_num, size_per_head]
+ * grid(batch_size, seq_len, head_num/warp_num) block(32, warp_num), each warp process size_per_head elements
+*/
+template <typename DataType>
+__global__ void qkRoteEmbedding(int8_t * __restrict__ q_buf, int8_t * __restrict__ k_buf, const int32_t * __restrict__ Q, 
+    const int32_t * __restrict__ K, const float * __restrict__ q_inp_scale, const float * __restrict__ k_inp_scale, 
+    const float * __restrict__ q_weight_scale, const float * __restrict__ k_weight_scale, float * __restrict__ q_out_scale,
+    float * __restrict__ k_out_scale, const int batch_size, const int seq_len, const int head_num, const int size_per_head,
+    const int warp_num)
+{
+    const int batch_id = blockIdx.x;
+    const int seq_id = blockIdx.y;
+    const int head_id = blockIdx.z * warp_num + threadIdx.y;
+    
+
+
+
+
+}
+
     
 }   // tinycudallama

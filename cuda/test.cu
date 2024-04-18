@@ -239,7 +239,7 @@ int main()
 
     // testEmbedding();
 
-    testPerChannelQuantized();
+    // testPerChannelQuantized();
 
     return 0;
 }
