@@ -156,14 +156,49 @@ void testPrecomputeFreqsCis()
     delete [] h_freqsCis;
 }
 
+void testEmbedding()
+{
+    using DataType = float;
+    const int batch_size = 2;
+    const int seq_len = 4;
+    const int hidden_units = 32;
+    int word_ids[batch_size * seq_len] = {0, 1, 2, 3, 3, 2, 1, 0};
 
+    DataType *h_embedding_table = new DataType[5 * hidden_units];
+    DataType *h_from_tensor = new DataType[batch_size * seq_len * hidden_units];
+    DataType *d_embedding_table;
+    DataType *from_tensor;
+    int *d_word_ids;
+
+    device_malloc(&d_embedding_table, sizeof(DataType) * 5 * hidden_units);
+    device_malloc(&from_tensor, sizeof(DataType) * batch_size * seq_len * hidden_units);
+    device_malloc(&d_word_ids, sizeof(int) * batch_size * seq_len);
+
+    CHECK_CUDA_ERROR(cudaMemcpy(h_embedding_table, d_embedding_table, sizeof(DataType) * 5 * hidden_units, cudaMemcpyDeviceToHost));
+    printVecInVec(h_embedding_table, 5, hidden_units, 5, hidden_units, "embedding_table");
+
+    CHECK_CUDA_ERROR(cudaMemcpy(d_word_ids, word_ids, sizeof(int) * batch_size * seq_len, cudaMemcpyHostToDevice));
+
+    tinycudallama::launchEmbeddingLookingUpKernel<DataType>(from_tensor, d_embedding_table, d_word_ids, hidden_units, batch_size, seq_len);
+    CHECK_CUDA_ERROR(cudaGetLastError());
+    CHECK_CUDA_ERROR(cudaMemcpy(h_from_tensor, from_tensor, sizeof(DataType) * batch_size * seq_len * hidden_units, cudaMemcpyDeviceToHost));
+    printVecInVec(h_from_tensor, batch_size * seq_len, hidden_units, batch_size * seq_len, hidden_units, "from_tensor");
+
+    CHECK_CUDA_ERROR(cudaFree(d_embedding_table));
+    CHECK_CUDA_ERROR(cudaFree(from_tensor));
+    CHECK_CUDA_ERROR(cudaFree(d_word_ids));
+
+    delete [] h_embedding_table;
+    delete [] h_from_tensor;
+}
 
 int main()
 {
     // testResNorm();
 
-    testPrecomputeFreqsCis();
-    
+    // testPrecomputeFreqsCis();
+
+    testEmbedding();
 
     return 0;
 }

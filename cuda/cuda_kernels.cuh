@@ -205,7 +205,31 @@ void launchPrecomputeFreqsCis(float *freq_cis, const int size_per_head, const in
     }
 }
 
+/**
+ * from_tensor: [batch_size, seq_len, hidden_units]
+ * word_ids:    [batch_size, seq_len]
+*/
+template <typename DataType>
+__global__ void embeddingLookingUpKernel(DataType * __restrict__ from_tensor, const DataType * __restrict__ embedding_table,
+    const int * __restrict__ word_ids, const int hidden_units, const int seq_len)
+{
+    const int batch_id = blockIdx.x;
+    const int seq_id = blockIdx.y;
+    const int offset = batch_id * seq_len * hidden_units + seq_id * hidden_units;
+    const int id_for_word = word_ids[batch_id * seq_len + seq_id];
+    for (int i=threadIdx.x; i<hidden_units; i+=blockDim.x) {
+        from_tensor[offset + i] = embedding_table[id_for_word * hidden_units + i];
+    }
+}
 
+template <typename DataType>
+void launchEmbeddingLookingUpKernel(DataType * from_tensor, const DataType * embedding_table,
+    const int * word_ids, const int hidden_units, const int batch_size, const int seq_len, cudaStream_t stream = 0)
+{
+    dim3 grid(batch_size, seq_len);
+    dim3 block(block_size);
+    embeddingLookingUpKernel<DataType><<<grid, block, 0, stream>>>(from_tensor, embedding_table, word_ids, hidden_units, seq_len);
+}
 
 
     
