@@ -287,7 +287,7 @@ void perChannelQuantizedKernelLauncher(int8_t *dst, const DataType *src, float *
  * freq_cis: [max_seq_len, size_per_head]
  * q_out_scale k_out_scale: [batch_size, seq_len, head_num], absmax / 127.0f
 */
-__global__ void qkRoteEmbeddingQuantizedTranspose(int8_t * q_buf, int8_t * k_buf, const int32_t * Q, 
+__global__ void warpQKRoteEmbeddingQuantizedTransposeKernel(int8_t * q_buf, int8_t * k_buf, const int32_t * Q, 
     const int32_t * K, const float * q_inp_scale, const float * k_inp_scale, 
     const float * q_weight_scale, const float * k_weight_scale, float * q_out_scale,
     float * k_out_scale, float * freq_cis, const int batch_size, const int seq_len, const int head_num, 
@@ -342,18 +342,151 @@ __global__ void qkRoteEmbeddingQuantizedTranspose(int8_t * q_buf, int8_t * k_buf
     }
 }
 
+/**
+ * 反量化、rope旋转编码、量化、转置
+ * Q K: [batch_size, seq_len, head_num, size_per_head]
+ * grid(head_num, seq_len, batch_size * 2) block(128), each block process size_per_head(256) elements
+ * q_inp_sacle k_inp_scale: [batch_size, seq_len], absmax / 127.0f
+ * q_weight_scale k_weight_scale: [head_num * size_per_head, ], absmax / 127.0f
+ * freq_cis: [max_seq_len, size_per_head]
+ * q_out_scale k_out_scale: [batch_size, seq_len, head_num], absmax / 127.0f
+*/
+__global__ void blockQKRoteEmbeddingQuantizedTransposeForDim256Kernel(int8_t * q_buf, int8_t * k_buf, const int32_t * Q, 
+    const int32_t * K, const float * q_inp_scale, const float * k_inp_scale, 
+    const float * q_weight_scale, const float * k_weight_scale, float * q_out_scale,
+    float * k_out_scale, float * freq_cis, const int batch_size, const int seq_len, const int head_num, 
+    const int size_per_head)
+{
+    const int qk_id = blockIdx.z / batch_size;
+    const int batch_id = blockIdx.z % batch_size;
+    const int seq_id = blockIdx.y;
+    const int head_id = blockIdx.x;
+    const int offset = batch_id * seq_len * head_num * size_per_head + seq_id * head_num * size_per_head + head_id * size_per_head;
+    const float inp_scale_val = (qk_id == 0) ? __ldg(q_inp_scale + batch_id * seq_len + seq_id) : __ldg(k_inp_scale + batch_id * seq_len + seq_id);
+    const int32_t *data_ptr = (qk_id == 0) ? Q + offset : K + offset;
+    const float *weight_scale_ptr = (qk_id == 0) ? q_weight_scale : k_weight_scale;
+    const float *freq_cis_ptr = freq_cis + seq_id * size_per_head;
+    float *out_scale_ptr = (qk_id == 0) ? q_out_scale : k_out_scale;
+    char2 *out_ptr = (qk_id == 0) ? (char2 *)q_buf : (char2 *)k_buf;
+    float2 val, rope_val;
+    char2 out_val;
+    float absmax = 0.0f;
+    const int tid = (threadIdx.x << 1);
+    float out_scale;
+    int target_idx;
+    // dequantized
+    val.x = static_cast<float>(data_ptr[tid]) * inp_scale_val * __ldg(weight_scale_ptr + head_id * size_per_head + tid);
+    val.y = static_cast<float>(data_ptr[tid + 1]) * inp_scale_val * __ldg(weight_scale_ptr + head_id * size_per_head + tid + 1);
+
+    // rope embedding
+    rope_val.x = val.x * freq_cis_ptr[tid] - val.y * freq_cis_ptr[tid + 1];
+    rope_val.y = val.y * freq_cis_ptr[tid] + val.x * freq_cis_ptr[tid + 1];
+
+    // quantized
+    absmax = fmaxf(absmax, fmaxf(fabsf(rope_val.x), fabsf(rope_val.y)));
+    __syncthreads();
+    absmax = blockAllReduce<MaxOp, float>(absmax);
+    if (tid == 0) {
+        out_scale_ptr[batch_id * head_num * seq_len + head_id * seq_len + seq_id] = absmax / 127.0f;
+    }
+    out_scale = 127.0f / absmax;
+    out_val.x = float_to_int8_rn(static_cast<float>(rope_val.x) * out_scale);
+    out_val.y = float_to_int8_rn(static_cast<float>(rope_val.y) * out_scale);
+
+    // transpose
+    target_idx = batch_id * head_num * seq_len * size_per_head + head_id * seq_len * size_per_head + seq_id * size_per_head + tid;
+    out_ptr[target_idx >> 1] = out_val;
+}
+
+/**
+ * 反量化、rope旋转编码、量化、转置
+ * Q K: [batch_size, seq_len, head_num, size_per_head]
+ * grid(head_num, seq_len, batch_size * 2) block(size_per_head / 4), each block process size_per_head elements
+ * q_inp_sacle k_inp_scale: [batch_size, seq_len], absmax / 127.0f
+ * q_weight_scale k_weight_scale: [head_num * size_per_head, ], absmax / 127.0f
+ * freq_cis: [max_seq_len, size_per_head]
+ * q_out_scale k_out_scale: [batch_size, seq_len, head_num], absmax / 127.0f
+*/
+__global__ void blockQKRoteEmbeddingQuantizedTransposeKernel(int8_t * q_buf, int8_t * k_buf, const int32_t * Q, 
+    const int32_t * K, const float * q_inp_scale, const float * k_inp_scale, 
+    const float * q_weight_scale, const float * k_weight_scale, float * q_out_scale,
+    float * k_out_scale, float * freq_cis, const int batch_size, const int seq_len, const int head_num, 
+    const int size_per_head)
+{
+    const int qk_id = blockIdx.z / batch_size;
+    const int batch_id = blockIdx.z % batch_size;
+    const int seq_id = blockIdx.y;
+    const int head_id = blockIdx.x;
+    const int offset = batch_id * seq_len * head_num * size_per_head + seq_id * head_num * size_per_head + head_id * size_per_head;
+    const float inp_scale_val = (qk_id == 0) ? __ldg(q_inp_scale + batch_id * seq_len + seq_id) : __ldg(k_inp_scale + batch_id * seq_len + seq_id);
+    const int32_t *data_ptr = (qk_id == 0) ? Q + offset : K + offset;
+    const float *weight_scale_ptr = (qk_id == 0) ? q_weight_scale : k_weight_scale;
+    const float *freq_cis_ptr = freq_cis + seq_id * size_per_head;
+    float *out_scale_ptr = (qk_id == 0) ? q_out_scale : k_out_scale;
+    char4 *out_ptr = (qk_id == 0) ? (char4 *)q_buf : (char4 *)k_buf;
+    float4 val, rope_val;
+    char4 out_val;
+    float absmax = 0.0f;
+    const int tid = (threadIdx.x << 2);
+    float out_scale;
+    int target_idx;
+    
+    // dequantized
+    val.x = static_cast<float>(data_ptr[tid]) * inp_scale_val * __ldg(weight_scale_ptr + head_id * size_per_head + tid);
+    val.y = static_cast<float>(data_ptr[tid + 1]) * inp_scale_val * __ldg(weight_scale_ptr + head_id * size_per_head + tid + 1);
+    val.z = static_cast<float>(data_ptr[tid + 2]) * inp_scale_val * __ldg(weight_scale_ptr + head_id * size_per_head + tid + 2);
+    val.w = static_cast<float>(data_ptr[tid + 3]) * inp_scale_val * __ldg(weight_scale_ptr + head_id * size_per_head + tid + 3);
+
+    // rope embedding
+    rope_val.x = val.x * freq_cis_ptr[tid] - val.y * freq_cis_ptr[tid + 1];
+    rope_val.y = val.y * freq_cis_ptr[tid] + val.x * freq_cis_ptr[tid + 1];
+    rope_val.z = val.z * freq_cis_ptr[tid + 2] - val.w * freq_cis_ptr[tid + 3];
+    rope_val.w = val.w * freq_cis_ptr[tid + 2] + val.z * freq_cis_ptr[tid + 3];
+
+    // quantized
+    absmax = fmaxf(absmax, fmaxf(fabsf(rope_val.x), fmaxf(fabsf(rope_val.y), fmaxf(fabsf(rope_val.z), fabsf(rope_val.w)))));
+    __syncthreads();
+    absmax = blockAllReduce<MaxOp, float>(absmax);
+    if (tid == 0) {
+        out_scale_ptr[batch_id * head_num * seq_len + head_id * seq_len + seq_id] = absmax / 127.0f;
+    }
+    out_scale = 127.0f / absmax;
+    out_val.x = float_to_int8_rn(static_cast<float>(rope_val.x) * out_scale);
+    out_val.y = float_to_int8_rn(static_cast<float>(rope_val.y) * out_scale);
+    out_val.z = float_to_int8_rn(static_cast<float>(rope_val.z) * out_scale);
+    out_val.w = float_to_int8_rn(static_cast<float>(rope_val.w) * out_scale);
+
+    // transpose
+    target_idx = batch_id * head_num * seq_len * size_per_head + head_id * seq_len * size_per_head + seq_id * size_per_head + tid;
+    out_ptr[target_idx >> 2] = out_val;
+}
+
 void launchQKRoteEmbeddingQuantizedTranspose(int8_t * q_buf, int8_t * k_buf, const int32_t * Q, 
     const int32_t * K, const float * q_inp_scale, const float * k_inp_scale, 
     const float * q_weight_scale, const float * k_weight_scale, float * q_out_scale,
     float * k_out_scale, float * freq_cis, const int batch_size, const int seq_len, const int head_num, 
     const int size_per_head, cudaStream_t stream = 0)
 {
-    assert(32 * 4 >= size_per_head);
-    int warp_num = block_size / 32;
-    dim3 grid(head_num / warp_num, seq_len, batch_size * 2);
-    dim3 block(32, warp_num);
-    qkRoteEmbeddingQuantizedTranspose<<<grid, block, 0, stream>>>(q_buf, k_buf, Q, K, q_inp_scale, k_inp_scale, 
-        q_weight_scale, k_weight_scale, q_out_scale, k_out_scale, freq_cis, batch_size, seq_len, head_num, size_per_head, warp_num);
+    assert(size_per_head <= 1024);
+    if (size_per_head <= 128) {
+        int warp_num = 4;
+        dim3 grid(head_num / warp_num, seq_len, batch_size * 2);
+        dim3 block(32, warp_num);
+        warpQKRoteEmbeddingQuantizedTransposeKernel<<<grid, block, 0, stream>>>(q_buf, k_buf, Q, K, q_inp_scale, k_inp_scale, 
+            q_weight_scale, k_weight_scale, q_out_scale, k_out_scale, freq_cis, batch_size, seq_len, head_num, size_per_head, warp_num);
+    }
+    else if (size_per_head == 256) {
+        dim3 grid(head_num, seq_len, batch_size * 2);
+        dim3 block(128);
+        blockQKRoteEmbeddingQuantizedTransposeForDim256Kernel<<<grid, block, 0, stream>>>(q_buf, k_buf, Q, K, q_inp_scale, k_inp_scale, 
+            q_weight_scale, k_weight_scale, q_out_scale, k_out_scale, freq_cis, batch_size, seq_len, head_num, size_per_head);
+    }
+    else if (size_per_head <= 1024) {
+        dim3 grid(head_num, seq_len, batch_size * 2);
+        dim3 block(size_per_head / 4);
+        blockQKRoteEmbeddingQuantizedTransposeKernel<<<grid, block, 0, stream>>>(q_buf, k_buf, Q, K, q_inp_scale, k_inp_scale, 
+            q_weight_scale, k_weight_scale, q_out_scale, k_out_scale, freq_cis, batch_size, seq_len, head_num, size_per_head);
+    }
 }
 
     
