@@ -235,7 +235,7 @@ void testQKRoteEmbeddingQuantizedTranspose()
     const int batch_size = 4;
     const int seq_len = 4;
     const int head_num = 32;
-    const int size_per_head = 128;
+    const int size_per_head = 1024;
     const int num_elements = batch_size * seq_len * head_num * size_per_head;
     const int hidden_units = head_num * size_per_head;
 
