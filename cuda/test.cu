@@ -23,7 +23,8 @@ template <>
 void printVecInVec(const half *clusters, const int nrows, const int ncols, const int end_row, const int end_col, const char *str)
 {
     printf("%s:\n[\n", str);
-    if (end_row >= nrows || end_col >= ncols) printf("invalid arguments!!!\nend_row >= nrows or end_col >= ncols\n");
+    if (end_row >= nrows || end_col >= ncols)
+        printf("invalid arguments!!!\nend_row >= nrows or end_col >= ncols\n");
     for (int i = 0; i < end_row; ++i)
     {
         printf("[");
@@ -36,28 +37,29 @@ void printVecInVec(const half *clusters, const int nrows, const int ncols, const
     printf("]\n");
 }
 
-template<typename T>
-void device_malloc(T** ptr, int size)
+template <typename T>
+void device_malloc(T **ptr, int size)
 {
-    CHECK_CUDA_ERROR(cudaMalloc((void**)ptr, sizeof(T) * size));
-    T* tmp = new T[size];
-    for(int i = 0; i < size; i++) tmp[i] = (T)((float) rand() / (RAND_MAX + 1.0) * 0.02);
+    CHECK_CUDA_ERROR(cudaMalloc((void **)ptr, sizeof(T) * size));
+    T *tmp = new T[size];
+    for (int i = 0; i < size; i++)
+        tmp[i] = (T)((float)rand() / (RAND_MAX + 1.0) * 0.02);
     CHECK_CUDA_ERROR(cudaMemcpy(*ptr, tmp, sizeof(T) * size, cudaMemcpyHostToDevice));
-    delete [] tmp;
+    delete[] tmp;
 }
 
 __global__ void convertMatfloat2half(const float *input, half *output, const int size)
 {
     int offset = blockIdx.x * blockDim.x + threadIdx.x;
-    for (int i=offset; i<size; i+=gridDim.x * blockDim.x) {
+    for (int i = offset; i < size; i += gridDim.x * blockDim.x)
+    {
         output[i] = __float2half(input[i]);
     }
 }
 
-
 template <typename DataType>
-void timingResNorm(DataType* output, const DataType* input, const DataType* gamma, const float eps, const int m, const int n, 
-    DataType *h_out, const int method)
+void timingResNorm(DataType *output, const DataType *input, const DataType *gamma, const float eps, const int m, const int n,
+                   DataType *h_out, const int method)
 {
     cudaEvent_t start, stop;
     CHECK_CUDA_ERROR(cudaEventCreate(&start));
@@ -83,22 +85,20 @@ void timingResNorm(DataType* output, const DataType* input, const DataType* gamm
     CHECK_CUDA_ERROR(cudaEventElapsedTime(&elapsedTime, start, stop));
     CHECK_CUDA_ERROR(cudaEventDestroy(start));
     CHECK_CUDA_ERROR(cudaEventDestroy(stop));
-    
+
     printf("Time = %g ms.\n", elapsedTime);
 
     CHECK_CUDA_ERROR(cudaMemcpy(h_out, output, sizeof(DataType) * (m * n), cudaMemcpyDeviceToHost));
     printf("method : %d\n", method);
     printVecInVec(h_out, m, n, 10, 10, "h_out");
-
 }
-
 
 void testResNorm()
 {
     using DataType = float;
     const int m = 10000;
     const int n = 4096;
-    
+
     DataType *h_out1 = new DataType[m * n * 2];
     DataType *h_out2 = h_out1 + m * n;
 
@@ -120,7 +120,7 @@ void testResNorm()
     half *d_out_half;
     half *d_gamma_half;
     half *h_out_half = new half[m * n];
-    
+
     device_malloc(&d_in_half, sizeof(half) * (m * n * 2 + n));
     d_out_half = d_in_half + m * n;
     d_gamma_half = d_out_half + m * n;
@@ -132,10 +132,9 @@ void testResNorm()
 
     CHECK_CUDA_ERROR(cudaFree(d_in));
     CHECK_CUDA_ERROR(cudaFree(d_in_half));
-    delete [] h_out_half;
-    delete [] h_out1;
+    delete[] h_out_half;
+    delete[] h_out1;
 }
-
 
 void testPrecomputeFreqsCis()
 {
@@ -153,7 +152,7 @@ void testPrecomputeFreqsCis()
     printVecInVec(h_freqsCis, seq_len, size_per_head, 10, size_per_head, "freqs_cis");
 
     CHECK_CUDA_ERROR(cudaFree(d_freqs_cis));
-    delete [] h_freqsCis;
+    delete[] h_freqsCis;
 }
 
 void testEmbedding()
@@ -188,8 +187,8 @@ void testEmbedding()
     CHECK_CUDA_ERROR(cudaFree(from_tensor));
     CHECK_CUDA_ERROR(cudaFree(d_word_ids));
 
-    delete [] h_embedding_table;
-    delete [] h_from_tensor;
+    delete[] h_embedding_table;
+    delete[] h_from_tensor;
 }
 
 void testPerChannelQuantized()
@@ -198,7 +197,8 @@ void testPerChannelQuantized()
     const int nrows = 8;
     const int hidden_size = 32;
     DataType *h_src = new DataType[nrows * hidden_size];
-    for (int i=0; i<nrows*hidden_size; ++i) {
+    for (int i = 0; i < nrows * hidden_size; ++i)
+    {
         h_src[i] = ((i & 1) == 0) ? i : (-1.0f) * i;
     }
     printVecInVec(h_src, nrows, hidden_size, nrows, hidden_size, "h_src");
@@ -226,10 +226,126 @@ void testPerChannelQuantized()
     CHECK_CUDA_ERROR(cudaFree(d_src));
     CHECK_CUDA_ERROR(cudaFree(d_scale));
     CHECK_CUDA_ERROR(cudaFree(d_dst));
-    delete [] h_src;
-    delete [] h_dst;
+    delete[] h_src;
+    delete[] h_dst;
 }
 
+void testQKRoteEmbeddingQuantizedTranspose()
+{
+    const int batch_size = 4;
+    const int seq_len = 4;
+    const int head_num = 32;
+    const int size_per_head = 128;
+    const int num_elements = batch_size * seq_len * head_num * size_per_head;
+    const int hidden_units = head_num * size_per_head;
+
+    int32_t *q = new int32_t[num_elements];
+    int32_t *k = new int32_t[num_elements];
+    for (int i = 0; i < num_elements; ++i)
+    {
+        q[i] = (i % 2 == 0) ? i : (-1 * i);
+        k[i] = (i % 2 == 0) ? i : (-3 * i + 2);
+    }
+    printVecInVec(q, batch_size * seq_len, hidden_units, 1, 10, "q");
+    printVecInVec(k, batch_size * seq_len, hidden_units, 1, 10, "k");
+
+    float *q_inp_scale = new float[batch_size * seq_len];
+    float *k_inp_scale = new float[batch_size * seq_len];
+    for (int i = 0; i < batch_size * seq_len; ++i)
+    {
+        q_inp_scale[i] = (i % 2 == 0) ? (i - 10) : (powf((float)i, 0.5f) + 10.0f);
+        k_inp_scale[i] = (i % 2 == 0) ? (i - 10) : (powf((float)i, 0.5f) + 5.0f);
+    }
+
+    float *q_weight_scale = new float[hidden_units];
+    float *k_weight_scale = new float[hidden_units];
+    for (int i = 0; i < hidden_units; ++i)
+    {
+        q_weight_scale[i] = (i % 2 == 0) ? (i - 10) : (powf((float)i, 0.3f) + 10.0f);
+        k_weight_scale[i] = (i % 2 == 0) ? (i - 10) : (powf((float)i, 0.3f) + 5.0f);
+    }
+
+    int mem_size = sizeof(int32_t) * num_elements * 2 + sizeof(float) * (batch_size * seq_len * 2 + batch_size * seq_len * head_num * 2 + hidden_units * 2) +
+                   sizeof(int8_t) * num_elements * 2 + sizeof(float) * seq_len * size_per_head;
+
+    int32_t *d_q;
+    int32_t *d_k;
+    float *d_q_inp_scale;
+    float *d_k_inp_scale;
+    float *d_q_out_scale;
+    float *d_k_out_scale;
+    float *d_q_weight_scale;
+    float *d_k_weight_scale;
+    int8_t *d_q_out;
+    int8_t *d_k_out;
+    float *d_freq_cis;
+    device_malloc(&d_q, mem_size);
+    d_k = (int32_t *)(d_q + num_elements);
+    d_q_inp_scale = (float *)(d_k + num_elements);
+    d_k_inp_scale = (float *)(d_q_inp_scale + batch_size * seq_len);
+    d_q_out_scale = (float *)(d_k_inp_scale + batch_size * seq_len);
+    d_k_out_scale = (float *)(d_q_out_scale + batch_size * seq_len * head_num);
+    d_q_weight_scale = (float *)(d_k_out_scale + batch_size * seq_len * head_num);
+    d_k_weight_scale = (float *)(d_q_weight_scale + hidden_units);
+    d_q_out = (int8_t *)(d_k_weight_scale + hidden_units);
+    d_k_out = (int8_t *)(d_q_out + num_elements);
+    d_freq_cis = (float *)(d_k_out + num_elements);
+
+    float *h_freq_cis = new float[seq_len * size_per_head];
+    float *h_q_out_scale = new float[batch_size * seq_len * head_num];
+    float *h_k_out_scale = new float[batch_size * seq_len * head_num];
+    int8_t *h_q_out = new int8_t[num_elements];
+    int8_t *h_k_out = new int8_t[num_elements];
+
+    CHECK_CUDA_ERROR(cudaMemcpy(d_q, q, sizeof(int32_t) * num_elements, cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(d_k, k, sizeof(int32_t) * num_elements, cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(d_q_inp_scale, q_inp_scale, sizeof(float) * batch_size * seq_len, cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(d_k_inp_scale, k_inp_scale, sizeof(float) * batch_size * seq_len, cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(d_q_weight_scale, q_weight_scale, sizeof(float) * hidden_units, cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(d_k_weight_scale, k_weight_scale, sizeof(float) * hidden_units, cudaMemcpyHostToDevice));
+
+    tinycudallama::launchPrecomputeFreqsCis(d_freq_cis, size_per_head, seq_len);
+    CHECK_CUDA_ERROR(cudaMemcpy(h_freq_cis, d_freq_cis, sizeof(float) * seq_len * size_per_head, cudaMemcpyDeviceToHost));
+    printVecInVec(h_freq_cis, seq_len, size_per_head, seq_len, 10, "freq_cis");
+
+    CHECK_CUDA_ERROR(cudaMemcpy(q_inp_scale, d_q_inp_scale, sizeof(float) * batch_size * seq_len, cudaMemcpyDeviceToHost));
+    CHECK_CUDA_ERROR(cudaMemcpy(q_inp_scale, d_q_inp_scale, sizeof(float) * batch_size * seq_len, cudaMemcpyDeviceToHost));
+    printVecInVec(q_inp_scale, 1, batch_size * seq_len, 1, batch_size * seq_len, "q_inp_scale");
+    printVecInVec(k_inp_scale, 1, batch_size * seq_len, 1, batch_size * seq_len, "k_inp_scale");
+
+    CHECK_CUDA_ERROR(cudaMemcpy(q_weight_scale, d_q_weight_scale, sizeof(float) * hidden_units, cudaMemcpyDeviceToHost));
+    CHECK_CUDA_ERROR(cudaMemcpy(k_weight_scale, d_k_weight_scale, sizeof(float) * hidden_units, cudaMemcpyDeviceToHost));
+    printVecInVec(q_weight_scale, 1, hidden_units, 1, 10, "q_weight_scale");
+    printVecInVec(k_weight_scale, 1, hidden_units, 1, 10, "k_weight_scale");
+
+    tinycudallama::launchQKRoteEmbeddingQuantizedTranspose(d_q_out, d_k_out, d_q, d_k, d_q_inp_scale, d_k_inp_scale,
+                                                           d_q_weight_scale, d_k_weight_scale, d_q_out_scale, d_k_out_scale,
+                                                           d_freq_cis, batch_size, seq_len, head_num, size_per_head);
+
+    CHECK_CUDA_ERROR(cudaMemcpy(h_q_out_scale, d_q_out_scale, sizeof(float) * batch_size * seq_len * head_num, cudaMemcpyDeviceToHost));
+    printVecInVec(h_q_out_scale, 1, batch_size * seq_len * head_num, 1, 32, "h_q_out_scale");
+    CHECK_CUDA_ERROR(cudaMemcpy(h_k_out_scale, d_k_out_scale, sizeof(float) * batch_size * seq_len * head_num, cudaMemcpyDeviceToHost));
+    printVecInVec(h_k_out_scale, 1, batch_size * seq_len * head_num, 1, 32, "h_k_out_scale");
+
+    CHECK_CUDA_ERROR(cudaMemcpy(h_q_out, d_q_out, sizeof(int8_t) * num_elements, cudaMemcpyDeviceToHost));
+    printVecInVec(h_q_out, 1, num_elements, 1, 128, "h_q_out");
+    CHECK_CUDA_ERROR(cudaMemcpy(h_k_out, d_k_out, sizeof(int8_t) * num_elements, cudaMemcpyDeviceToHost));
+    printVecInVec(h_k_out, 1, num_elements, 1, 128, "h_k_out");
+
+    delete[] q;
+    delete[] k;
+    delete[] q_inp_scale;
+    delete[] k_inp_scale;
+    delete[] q_weight_scale;
+    delete[] k_weight_scale;
+    delete[] h_q_out;
+    delete[] h_k_out;
+    delete[] h_freq_cis;
+    delete[] h_k_out_scale;
+    delete[] h_q_out_scale;
+
+    CHECK_CUDA_ERROR(cudaFree(d_q));
+}
 
 int main()
 {
@@ -240,6 +356,8 @@ int main()
     // testEmbedding();
 
     // testPerChannelQuantized();
+
+    testQKRoteEmbeddingQuantizedTranspose();
 
     return 0;
 }
