@@ -347,6 +347,50 @@ void testQKRoteEmbeddingQuantizedTranspose()
     CHECK_CUDA_ERROR(cudaFree(d_q));
 }
 
+void testStorecache()
+{
+    const int batch_size = 2;
+    const int max_seq_len = 5;
+    const int seq_len = 2;
+    const int start_pos = 1;
+    const int head_num = 32;
+    const int size_per_head = 128;
+    const int cache_size = batch_size * max_seq_len * head_num * size_per_head;
+    const int num_elements = batch_size * seq_len * head_num * size_per_head;
+
+    float *h_k_cache = new float[cache_size * 2]{0.0f};
+    float *h_v_cache = h_k_cache + cache_size;
+    float *h_k_inp = new float[num_elements * 2];
+    float *h_v_inp = h_k_inp + num_elements;
+    for (int i = 0; i < num_elements * 2; ++i)
+        h_k_inp[i] = i * 0.1f + 0.09f;
+
+    float *d_v_inp;
+    float *d_k_inp;
+    float *d_v_cache;
+    float *d_k_cache;
+
+    device_malloc(&d_k_inp, sizeof(float) * num_elements * 2);
+    d_v_inp = d_k_inp + num_elements;
+    device_malloc(&d_k_cache, sizeof(float) * cache_size * 2);
+    d_v_cache = d_k_cache + cache_size;
+
+    CHECK_CUDA_ERROR(cudaMemcpy(d_k_inp, h_k_inp, sizeof(float) * num_elements * 2, cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(d_k_cache, h_k_cache, sizeof(float) * cache_size * 2, cudaMemcpyHostToDevice));
+
+    tinycudallama::launchStoreKVcacheKernel(d_k_cache, d_v_cache, d_k_inp, d_v_inp, start_pos, seq_len, batch_size, head_num, max_seq_len, size_per_head);
+
+    CHECK_CUDA_ERROR(cudaMemcpy(h_k_cache, d_k_cache, sizeof(float) * cache_size * 2, cudaMemcpyDeviceToHost));
+
+    printVecInVec(h_k_cache, batch_size * head_num * max_seq_len, size_per_head, max_seq_len, size_per_head, "h_cache");
+    printVecInVec(h_v_cache, batch_size * head_num * max_seq_len, size_per_head, max_seq_len, size_per_head, "v_cache");
+
+    CHECK_CUDA_ERROR(cudaFree(d_k_cache));
+    CHECK_CUDA_ERROR(cudaFree(d_k_inp));
+    delete[] h_k_inp;
+    delete[] h_k_cache;
+}
+
 int main()
 {
     // testResNorm();
@@ -357,7 +401,9 @@ int main()
 
     // testPerChannelQuantized();
 
-    testQKRoteEmbeddingQuantizedTranspose();
+    // testQKRoteEmbeddingQuantizedTranspose();
+
+    testStorecache();
 
     return 0;
 }
