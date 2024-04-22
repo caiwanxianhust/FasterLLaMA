@@ -36,24 +36,44 @@ __inline__ __device__ T warpAllReduce(T val)
     return val;
 }
 
-template <template <typename> class ReductionOp, typename T>
-__inline__ __device__
-    T
-    blockAllReduce(T val)
+template <typename T>
+__inline__ __device__ T blockAllReduceSum(T val)
 {
     static __shared__ T shared[32];
     __shared__ T result;
     int lane = threadIdx.x & 0x1f;
     int wid = threadIdx.x >> 5;
 
-    val = warpAllReduce<ReductionOp, T>(val);
+    val = warpAllReduce<SumOp, T>(val);
 
     if (lane == 0)
         shared[wid] = val;
     __syncthreads();
 
     val = (threadIdx.x < (blockDim.x >> 5)) ? shared[lane] : (T)0.0f;
-    val = warpAllReduce<ReductionOp, T>(val);
+    val = warpAllReduce<SumOp, T>(val);
+    if (threadIdx.x == 0)
+        result = val;
+    __syncthreads();
+    return result;
+}
+
+template <typename T>
+__inline__ __device__ T blockAllReduceMax(T val)
+{
+    static __shared__ T shared[32];
+    __shared__ T result;
+    int lane = threadIdx.x & 0x1f;
+    int wid = threadIdx.x >> 5;
+
+    val = warpAllReduce<MaxOp, T>(val);
+
+    if (lane == 0)
+        shared[wid] = val;
+    __syncthreads();
+
+    val = (threadIdx.x < (blockDim.x >> 5)) ? shared[lane] : (T)(-1e9f);
+    val = warpAllReduce<MaxOp, T>(val);
     if (threadIdx.x == 0)
         result = val;
     __syncthreads();
@@ -73,7 +93,7 @@ __global__ void resNormKernel(DataType *__restrict__ output, const DataType *__r
     }
     __syncthreads();
 
-    val = blockAllReduce<SumOp, float>(val);
+    val = blockAllReduceSum<float>(val);
     mean = rsqrtf(val / hidden_units + eps);
     // __syncthreads();
 
@@ -102,7 +122,7 @@ __global__ void resNormKernel(half *__restrict__ output, const half *__restrict_
     }
     __syncthreads();
 
-    mean = blockAllReduce<SumOp, float>(mean);
+    mean = blockAllReduceSum<float>(mean);
     mean = rsqrtf(mean / hidden_units + eps);
 
     float2 scale;
@@ -270,7 +290,7 @@ __global__ void perChannelQuantizedKernel(int8_t *__restrict__ dst, const DataTy
         absmax = fmaxf(absmax, fabsf(static_cast<float>(__ldg(&src[offset + i + 3]))));
     }
     __syncthreads();
-    absmax = blockAllReduce<MaxOp, float>(absmax);
+    absmax = blockAllReduceMax<float>(absmax);
     float scale = 127.0f / absmax;
 
     char4 *dst_ptr4 = (char4 *)(dst + offset);
@@ -407,7 +427,7 @@ __global__ void blockQKRoteEmbeddingQuantizedTransposeForDim256Kernel(int8_t *q_
     // quantized
     absmax = fmaxf(absmax, fmaxf(fabsf(rope_val.x), fabsf(rope_val.y)));
     __syncthreads();
-    absmax = blockAllReduce<MaxOp, float>(absmax);
+    absmax = blockAllReduceMax<float>(absmax);
     if (tid == 0)
     {
         out_scale_ptr[batch_id * head_num * seq_len + head_id * seq_len + seq_id] = absmax / 127.0f;
@@ -428,7 +448,7 @@ __global__ void blockQKRoteEmbeddingQuantizedTransposeForDim256Kernel(int8_t *q_
  * q_inp_sacle k_inp_scale: [batch_size, seq_len], absmax / 127.0f
  * q_weight_scale k_weight_scale: [head_num * size_per_head, ], absmax / 127.0f
  * freq_cis: [max_seq_len, size_per_head]
- * q_out_scale k_out_scale: [batch_size, seq_len, head_num], absmax / 127.0f
+ * q_out_scale k_out_scale: [batch_size, head_num, seq_len], absmax / 127.0f
  */
 __global__ void blockQKRoteEmbeddingQuantizedTransposeKernel(int8_t *q_buf, int8_t *k_buf, const int32_t *Q,
                                                                 const int32_t *K, const float *q_inp_scale, const float *k_inp_scale,
@@ -469,7 +489,7 @@ __global__ void blockQKRoteEmbeddingQuantizedTransposeKernel(int8_t *q_buf, int8
     // quantized
     absmax = fmaxf(absmax, fmaxf(fabsf(rope_val.x), fmaxf(fabsf(rope_val.y), fmaxf(fabsf(rope_val.z), fabsf(rope_val.w)))));
     __syncthreads();
-    absmax = blockAllReduce<MaxOp, float>(absmax);
+    absmax = blockAllReduceMax<float>(absmax);
     if (tid == 0)
     {
         out_scale_ptr[batch_id * head_num * seq_len + head_id * seq_len + seq_id] = absmax / 127.0f;
@@ -521,7 +541,7 @@ void launchQKRoteEmbeddingQuantizedTranspose(int8_t *q_buf, int8_t *k_buf, const
  * k_cache: [batch_size, head_num, max_seq_len, size_per_head]
  *
  */
-__global__ void StoreKVcacheKernel(float *__restrict__ k_cache, float *__restrict__ v_cache, const float *__restrict__ K,
+__global__ void storeKVcacheKernel(float *__restrict__ k_cache, float *__restrict__ v_cache, const float *__restrict__ K,
                                     const float *__restrict__ V, const int start_pos, const int seq_len, const int batch_size, const int head_num,
                                     const int max_seq_len, const int size_per_head)
 {
@@ -550,10 +570,70 @@ void launchStoreKVcacheKernel(float *k_cache, float *v_cache, const float *K, co
     assert(grid.y >= 1);
     grid.z = batch_size * 2;
 
-    StoreKVcacheKernel<<<grid, block, 0, stream>>>(k_cache, v_cache, K, V, start_pos, seq_len, batch_size, head_num, max_seq_len,
+    storeKVcacheKernel<<<grid, block, 0, stream>>>(k_cache, v_cache, K, V, start_pos, seq_len, batch_size, head_num, max_seq_len,
                                                             size_per_head);
 }
 
+/**
+ * 反量化、softmax、量化
+ * grid(seq_len_q, head_num, batch_size), block(128), each block process seq_len_k elements
+ * qk score: [batch_size, head_num, seq_len_q, seq_len_k]
+ * atten_mask: [max_seq_len, max_seq_len]
+ * q_inp_scale: [batch_size, head_num, seq_len_q]
+ * k_inp_scale: [batch_size, head_num, seq_len_k]
+ * score_scale: [batch_size, head_num, seq_len_q]
+ * 
+*/
+__global__ void blockSoftmaxKernel(int8_t * __restrict__ score, const int32_t * __restrict__ qk, const float * __restrict__ attn_mask, 
+    const float * __restrict__ q_inp_scale, const float * __restrict__ k_inp_scale, float * __restrict__ score_scale,
+    const float attn_scale, const int batch_size, const int head_num, const int seq_len_q, const int seq_len_k, const int max_seq_len)
+{
+    const int batch_id = blockIdx.z;
+    const int head_id = blockIdx.y;
+    const int seq_q_id = blockIdx.x;
+    const int offset = batch_id * head_num * seq_len_q * seq_len_k + head_id * seq_len_q * seq_len_k + seq_q_id * seq_len_k;
+    const int k_scale_offset = batch_id * head_num * seq_len_k + head_id * seq_len_k;
+    const float q_inp_scale_val = q_inp_scale[batch_id * head_num * seq_len_q + head_id * seq_len_q + seq_q_id];
+    const int mask_offset = seq_q_id * max_seq_len;
+    extern __shared__ float s_buf[];
+    float val, mask_val;
+    float sum_val = 0.0f;
+    float max_val = -1e9f;
+    for (int i=threadIdx.x; i<seq_len_k; i+=blockDim.x) {
+        // dequantized
+        val = static_cast<float>(qk[offset + i]) * q_inp_scale_val * k_inp_scale[k_scale_offset + i];
+        mask_val = (attn_mask) ? attn_mask[mask_offset + i] : 0.0f;
+        val = val * attn_scale + mask_val;
+        s_buf[i] = val;
+        max_val = max(max_val, val);
+    }
+    __syncthreads();
+    max_val = blockAllReduceMax<float>(max_val);
+    
+    for (int i=threadIdx.x; i<seq_len_k; i+=blockDim.x) {
+        val = expf(s_buf[i] - max_val);
+        sum_val += val;
+        score[offset + i] = float_to_int8_rn(val * 127.0f);
+    }
+    __syncthreads();
+    sum_val = blockAllReduceSum<float>(sum_val);
+    
+    if (threadIdx.x == 0) {
+        score_scale[batch_id * head_num * seq_len_q + head_id * seq_len_q + seq_q_id] = 1.0f / (127.0f * (sum_val + 1e-7f));
+    }
+}
+
+
+void launchBlockSoftmaxKernel(int8_t * score, const int32_t * qk, const float * attn_mask, const float * q_inp_scale, 
+    const float * k_inp_scale, float * score_scale, const float attn_scale, const int batch_size, const int head_num, 
+    const int seq_len_q, const int seq_len_k, const int max_seq_len, cudaStream_t stream = 0)
+{
+    dim3 grid(seq_len_q, head_num, batch_size);
+    dim3 block(256);
+    int shared_mem_size = sizeof(float) * seq_len_k;
+    blockSoftmaxKernel<<<grid, block, shared_mem_size, stream>>>(score, qk, attn_mask, q_inp_scale, k_inp_scale, score_scale, attn_scale, 
+        batch_size, head_num, seq_len_q, seq_len_k, max_seq_len);
+}
 
 
 

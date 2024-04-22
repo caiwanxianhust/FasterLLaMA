@@ -391,6 +391,94 @@ void testStorecache()
     delete[] h_k_cache;
 }
 
+
+void testSoftmax()
+{
+    const int batch_size = 4;
+    const int seq_len_q = 100;
+    const int head_num = 32;
+    const int seq_len_k = 100;
+    const int max_seq_len = 2048;
+    const int num_elements = batch_size * seq_len_q * head_num * seq_len_k;
+
+    int32_t *qk = new int32_t[num_elements];
+    for (int i = 0; i < num_elements; ++i)
+    {
+        qk[i] = (i % 2 == 0) ? i : (-1 * i);
+    }
+    printVecInVec(qk, batch_size * seq_len_q * head_num, seq_len_k, 2, 16, "qk");
+
+    float *q_inp_scale = new float[batch_size * head_num * seq_len_q];
+    float *k_inp_scale = new float[batch_size * head_num * seq_len_k];
+    for (int i = 0; i < batch_size * head_num * seq_len_q; ++i)
+    {
+        q_inp_scale[i] = (i % 2 == 0) ? (i - 10) : (powf((float)i, 0.5f) + 10.0f);
+    }
+    for (int i = 0; i < batch_size * head_num * seq_len_k; ++i)
+    {
+        k_inp_scale[i] = (i % 2 == 0) ? (i - 10) : (powf((float)i, 0.5f) + 5.0f);
+    }
+
+    printVecInVec(q_inp_scale, batch_size * head_num, seq_len_q, 1, 10, "q_inp_scale");
+    printVecInVec(k_inp_scale, batch_size * head_num, seq_len_k, 1, 10, "k_inp_scale");
+
+    float *attn_mask = new float[max_seq_len * max_seq_len];
+    for (int i=0; i<max_seq_len; ++i) {
+        for (int j=0; j<max_seq_len; ++j) {
+            if (j > i) attn_mask[i * max_seq_len + j] = -1e5f;
+            else attn_mask[i * max_seq_len + j] = 0.0f;
+        }
+    }
+    printVecInVec(attn_mask, max_seq_len, max_seq_len, 10, 10, "attn_mask");
+
+    int mem_size = sizeof(int32_t) * num_elements + 
+                    sizeof(float) * (batch_size * head_num * seq_len_q) + 
+                    sizeof(float) * (batch_size * head_num * seq_len_k) +
+                    sizeof(float) * (max_seq_len * max_seq_len) + 
+                    sizeof(float) * (batch_size * head_num * seq_len_q) +
+                    sizeof(int8_t) * num_elements;
+
+    int32_t *d_qk;
+    float *d_q_inp_scale;
+    float *d_k_inp_scale;
+    float *d_attn_mask;
+    float *d_score_scale;
+    int8_t *d_score;
+
+    device_malloc(&d_qk, mem_size);
+    d_q_inp_scale = (float *)(d_qk + num_elements);
+    d_k_inp_scale = (float *)(d_q_inp_scale + batch_size * head_num * seq_len_q);
+    d_attn_mask = (float *)(d_k_inp_scale + batch_size * head_num * seq_len_k);
+    d_score_scale = (float *)(d_attn_mask + max_seq_len * max_seq_len);
+    d_score = (int8_t *)(d_score_scale + batch_size * head_num * seq_len_q);
+
+    float *h_score_scale = new float[batch_size * head_num * seq_len_q];
+    int8_t *h_score = new int8_t[num_elements];
+
+    CHECK_CUDA_ERROR(cudaMemcpy(d_qk, qk, sizeof(int32_t) * num_elements, cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(d_q_inp_scale, q_inp_scale, sizeof(float) * batch_size * head_num * seq_len_q, cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(d_k_inp_scale, k_inp_scale, sizeof(float) * batch_size * head_num * seq_len_k, cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(d_attn_mask, attn_mask, sizeof(float) * max_seq_len * max_seq_len, cudaMemcpyHostToDevice));
+
+    tinycudallama::launchBlockSoftmaxKernel(d_score, d_qk, d_attn_mask, d_q_inp_scale, d_k_inp_scale, d_score_scale, rsqrtf((float)seq_len_k), 
+        batch_size, head_num, seq_len_q, seq_len_k, max_seq_len);
+
+    CHECK_CUDA_ERROR(cudaMemcpy(h_score_scale, d_score_scale, sizeof(float) * batch_size * head_num * seq_len_q, cudaMemcpyDeviceToHost));
+    printVecInVec(h_score_scale, batch_size * head_num, seq_len_q, 1, 10, "h_score_scale");
+    CHECK_CUDA_ERROR(cudaMemcpy(h_score, d_score, sizeof(int8_t) * num_elements, cudaMemcpyDeviceToHost));
+    printVecInVec(h_score, batch_size * head_num * seq_len_q, seq_len_k, 10, 10, "h_score");
+
+    delete[] qk;
+    delete[] q_inp_scale;
+    delete[] k_inp_scale;
+    delete[] attn_mask;
+    delete[] h_score;
+    delete[] h_score_scale;
+
+    CHECK_CUDA_ERROR(cudaFree(d_qk));
+}
+
+
 int main()
 {
     // testResNorm();
@@ -403,7 +491,10 @@ int main()
 
     // testQKRoteEmbeddingQuantizedTranspose();
 
-    testStorecache();
+    // testStorecache();
+
+    testSoftmax();
+
 
     return 0;
 }
