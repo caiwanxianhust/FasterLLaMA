@@ -527,12 +527,15 @@ void launchQKRoteEmbeddingQuantizedTranspose(int8_t *q_buf, int8_t *k_buf, const
         blockQKRoteEmbeddingQuantizedTransposeForDim256Kernel<<<grid, block, 0, stream>>>(q_buf, k_buf, Q, K, q_inp_scale, k_inp_scale,
                                                                                             q_weight_scale, k_weight_scale, q_out_scale, k_out_scale, freq_cis, batch_size, seq_len, head_num, size_per_head);
     }
-    else if (size_per_head <= 1024)
+    else if (size_per_head == 512 || size_per_head == 1024)
     {
         dim3 grid(head_num, seq_len, batch_size * 2);
         dim3 block(size_per_head / 4);
         blockQKRoteEmbeddingQuantizedTransposeKernel<<<grid, block, 0, stream>>>(q_buf, k_buf, Q, K, q_inp_scale, k_inp_scale,
                                                                                     q_weight_scale, k_weight_scale, q_out_scale, k_out_scale, freq_cis, batch_size, seq_len, head_num, size_per_head);
+    }
+    else {
+        throw "invalid size_per_head!";
     }
 }
 
@@ -674,8 +677,194 @@ void launchBlockSoftmaxKernel(int8_t * score, const int32_t * qk, const float * 
         batch_size, head_num, seq_len_q, seq_len_k, max_seq_len);
 }
 
+/**
+ * 反量化、量化、转置
+ * grid(head_num / warp_num, seq_len, batch_size) block(32, warp_num), each warp process size_per_head elements
+ * V: [batch_size, seq_len, head_num, size_per_head]
+ * v_buf: [batch_size, head_num, seq_len, size_per_head]
+ * v_inp_sacle: [batch_size, seq_len], absmax / 127.0f
+ * v_weight_scale: [head_num * size_per_head, ], absmax / 127.0f
+ * v_out_scale k_out_scale: [batch_size, seq_len, head_num], absmax / 127.0f
+*/
+__global__ void warpDequantizedVTransposeQuantizedKernel(float * __restrict__ v_buf, const int32_t * __restrict__ V,
+    const float * __restrict__ v_inp_scale, const float * __restrict__ v_weight_scale, float * __restrict__ v_out_scale, 
+    const int batch_size, const int seq_len, const int head_num, const int size_per_head, const int warp_num)
+{
+    const int batch_id = blockIdx.z;
+    const int seq_id = blockIdx.y;
+    const int head_id = blockIdx.x * warp_num + threadIdx.y;
+    const int offset = batch_id * seq_len * head_num * size_per_head + seq_id * head_num * size_per_head + head_id * size_per_head;
+    const float inp_scale_val = __ldg(v_inp_scale + batch_id * seq_len + seq_id);
+    const int32_t *data_ptr = V + offset;
+    const float *weight_scale_ptr = v_weight_scale;
+    float *out_scale_ptr = v_out_scale;
+    char4 *out_ptr = (char4 *)v_buf;
+    float4 val;
+    char4 out_val;
+    float absmax = 0.0f;
+    const int tid = (threadIdx.x << 2);
+    float out_scale;
+    int target_idx;
+    if (tid < size_per_head)
+    {
+        // dequantized
+        val.x = static_cast<float>(data_ptr[tid]) * inp_scale_val * __ldg(weight_scale_ptr + head_id * size_per_head + tid);
+        val.y = static_cast<float>(data_ptr[tid + 1]) * inp_scale_val * __ldg(weight_scale_ptr + head_id * size_per_head + tid + 1);
+        val.z = static_cast<float>(data_ptr[tid + 2]) * inp_scale_val * __ldg(weight_scale_ptr + head_id * size_per_head + tid + 2);
+        val.w = static_cast<float>(data_ptr[tid + 3]) * inp_scale_val * __ldg(weight_scale_ptr + head_id * size_per_head + tid + 3);
 
-__global__ void dequantizedVTransposeQuantized(float * __restrict__ v_buf, const int32_t * __restrict__ V);
+        // quantized
+        absmax = fmaxf(absmax, fmaxf(fabsf(val.x), fmaxf(fabsf(val.y), fmaxf(fabsf(val.z), fabsf(val.w)))));
+        __syncwarp();
+        absmax = warpAllReduce<MaxOp, float>(absmax);
+        if (tid == 0)
+        {
+            out_scale_ptr[batch_id * head_num * seq_len + head_id * seq_len + seq_id] = absmax / 127.0f;
+        }
+        out_scale = 127.0f / absmax;
+        out_val.x = float_to_int8_rn(val.x * out_scale);
+        out_val.y = float_to_int8_rn(val.y * out_scale);
+        out_val.z = float_to_int8_rn(val.z * out_scale);
+        out_val.w = float_to_int8_rn(val.w * out_scale);
+
+        // transpose
+        target_idx = batch_id * head_num * seq_len * size_per_head + head_id * seq_len * size_per_head + seq_id * size_per_head + tid;
+        out_ptr[target_idx >> 2] = out_val;
+    }
+}
+
+/**
+ * 反量化、量化、转置
+ * grid(head_num, seq_len, batch_size) block(128), each block process size_per_head elements
+ * V: [batch_size, seq_len, head_num, size_per_head]
+ * v_buf: [batch_size, head_num, seq_len, size_per_head]
+ * v_inp_sacle: [batch_size, seq_len], absmax / 127.0f
+ * v_weight_scale: [head_num * size_per_head, ], absmax / 127.0f
+ * v_out_scale k_out_scale: [batch_size, seq_len, head_num], absmax / 127.0f
+*/
+__global__ void blockDequantizedVTransposeQuantizedFor256Kernel(float * __restrict__ v_buf, const int32_t * __restrict__ V,
+    const float * __restrict__ v_inp_scale, const float * __restrict__ v_weight_scale, float * __restrict__ v_out_scale, 
+    const int batch_size, const int seq_len, const int head_num, const int size_per_head)
+{
+    const int batch_id = blockIdx.z;
+    const int seq_id = blockIdx.y;
+    const int head_id = blockIdx.x;
+    const int offset = batch_id * seq_len * head_num * size_per_head + seq_id * head_num * size_per_head + head_id * size_per_head;
+    const float inp_scale_val = __ldg(v_inp_scale + batch_id * seq_len + seq_id);
+    const int32_t *data_ptr = V + offset;
+    const float *weight_scale_ptr = v_weight_scale;
+    
+    float *out_scale_ptr = v_out_scale;
+    char2 *out_ptr = (char2 *)v_buf;
+    float2 val;
+    char2 out_val;
+    float absmax = 0.0f;
+    const int tid = (threadIdx.x << 1);
+    float out_scale;
+    int target_idx;
+    
+    // dequantized
+    val.x = static_cast<float>(data_ptr[tid]) * inp_scale_val * __ldg(weight_scale_ptr + head_id * size_per_head + tid);
+    val.y = static_cast<float>(data_ptr[tid + 1]) * inp_scale_val * __ldg(weight_scale_ptr + head_id * size_per_head + tid + 1);
+    // quantized
+    absmax = fmaxf(absmax, fmaxf(fabsf(val.x), fabsf(val.y)));
+    __syncthreads();
+    absmax = warpAllReduce<MaxOp, float>(absmax);
+    if (tid == 0)
+    {
+        out_scale_ptr[batch_id * head_num * seq_len + head_id * seq_len + seq_id] = absmax / 127.0f;
+    }
+    out_scale = 127.0f / absmax;
+    out_val.x = float_to_int8_rn(val.x * out_scale);
+    out_val.y = float_to_int8_rn(val.y * out_scale);
+
+    // transpose
+    target_idx = batch_id * head_num * seq_len * size_per_head + head_id * seq_len * size_per_head + seq_id * size_per_head + tid;
+    out_ptr[target_idx >> 1] = out_val;
+}
+
+/**
+ * 反量化、量化、转置
+ * grid(head_num, seq_len, batch_size) block(size_per_head / 4), each block process size_per_head elements
+ * V: [batch_size, seq_len, head_num, size_per_head]
+ * v_buf: [batch_size, head_num, seq_len, size_per_head]
+ * v_inp_sacle: [batch_size, seq_len], absmax / 127.0f
+ * v_weight_scale: [head_num * size_per_head, ], absmax / 127.0f
+ * v_out_scale k_out_scale: [batch_size, seq_len, head_num], absmax / 127.0f
+*/
+__global__ void blockDequantizedVTransposeQuantizedKernel(float * __restrict__ v_buf, const int32_t * __restrict__ V,
+    const float * __restrict__ v_inp_scale, const float * __restrict__ v_weight_scale, float * __restrict__ v_out_scale, 
+    const int batch_size, const int seq_len, const int head_num, const int size_per_head)
+{
+    const int batch_id = blockIdx.z;
+    const int seq_id = blockIdx.y;
+    const int head_id = blockIdx.x;
+    const int offset = batch_id * seq_len * head_num * size_per_head + seq_id * head_num * size_per_head + head_id * size_per_head;
+    const float inp_scale_val = __ldg(v_inp_scale + batch_id * seq_len + seq_id);
+    const int32_t *data_ptr = V + offset;
+    const float *weight_scale_ptr = v_weight_scale;
+    float *out_scale_ptr = v_out_scale;
+    char4 *out_ptr = (char4 *)v_buf;
+    float4 val;
+    char4 out_val;
+    float absmax = 0.0f;
+    const int tid = (threadIdx.x << 2);
+    float out_scale;
+    int target_idx;
+    
+    // dequantized
+    val.x = static_cast<float>(data_ptr[tid]) * inp_scale_val * __ldg(weight_scale_ptr + head_id * size_per_head + tid);
+    val.y = static_cast<float>(data_ptr[tid + 1]) * inp_scale_val * __ldg(weight_scale_ptr + head_id * size_per_head + tid + 1);
+    val.z = static_cast<float>(data_ptr[tid + 2]) * inp_scale_val * __ldg(weight_scale_ptr + head_id * size_per_head + tid + 2);
+    val.w = static_cast<float>(data_ptr[tid + 3]) * inp_scale_val * __ldg(weight_scale_ptr + head_id * size_per_head + tid + 3);
+
+    // quantized
+    absmax = fmaxf(absmax, fmaxf(fabsf(val.x), fmaxf(fabsf(val.y), fmaxf(fabsf(val.z), fabsf(val.w)))));
+    __syncthreads();
+    absmax = warpAllReduce<MaxOp, float>(absmax);
+    if (tid == 0)
+    {
+        out_scale_ptr[batch_id * head_num * seq_len + head_id * seq_len + seq_id] = absmax / 127.0f;
+    }
+    out_scale = 127.0f / absmax;
+    out_val.x = float_to_int8_rn(val.x * out_scale);
+    out_val.y = float_to_int8_rn(val.y * out_scale);
+    out_val.z = float_to_int8_rn(val.z * out_scale);
+    out_val.w = float_to_int8_rn(val.w * out_scale);
+
+    // transpose
+    target_idx = batch_id * head_num * seq_len * size_per_head + head_id * seq_len * size_per_head + seq_id * size_per_head + tid;
+    out_ptr[target_idx >> 2] = out_val;
+}
+
+
+void launchDequantizedVTransposeQuantizedKernel(float * v_buf, const int32_t * V, const float * v_inp_scale, const float * v_weight_scale, 
+    float * v_out_scale, const int batch_size, const int seq_len, const int head_num, const int size_per_head, cudaStream_t stream = 0)
+{
+    assert(size_per_head <= 1024);
+    if (size_per_head <= 128) {
+        int warp_num = 128 / 32;
+        dim3 grid(head_num / warp_num, seq_len, batch_size);
+        dim3 block(32, warp_num);
+        warpDequantizedVTransposeQuantizedKernel<<<grid, block, 0, stream>>>(v_buf, V, v_inp_scale, v_weight_scale, v_out_scale, batch_size,
+            seq_len, head_num, size_per_head, warp_num);
+    }
+    else if (size_per_head == 256) {
+        dim3 grid(head_num, seq_len, batch_size);
+        dim3 block(128);
+        blockDequantizedVTransposeQuantizedFor256Kernel<<<grid, block, 0, stream>>>(v_buf, V, v_inp_scale, v_weight_scale, v_out_scale,
+            batch_size, seq_len, head_num, size_per_head);
+    }
+    else if (size_per_head == 512 || size_per_head == 1024) {
+        dim3 grid(head_num, seq_len, batch_size);
+        dim3 block(size_per_head / 4);
+        blockDequantizedVTransposeQuantizedKernel<<<grid, block, 0, stream>>>(v_buf, V, v_inp_scale, v_weight_scale, v_out_scale,
+            batch_size, seq_len, head_num, size_per_head);
+    }
+    else {
+        throw "invalid size_per_head!";
+    }
+}
 
 
 } // tinycudallama
