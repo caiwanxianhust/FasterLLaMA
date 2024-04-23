@@ -538,8 +538,8 @@ void launchQKRoteEmbeddingQuantizedTranspose(int8_t *q_buf, int8_t *k_buf, const
 
 /**
  * grid: [seq_len, head_num / blockDim.y, batch_size * 2]  block(size_per_head / 4, 256 / (size_per_head / 4))
- * k_cache: [batch_size, head_num, max_seq_len, size_per_head]
- *
+ * k_cache v_cache: [batch_size, head_num, max_seq_len, size_per_head]
+ * K V : [batch_size, head_num, seq_len, size_per_head]
  */
 __global__ void storeKVcacheKernel(float *__restrict__ k_cache, float *__restrict__ v_cache, const float *__restrict__ K,
                                     const float *__restrict__ V, const int start_pos, const int seq_len, const int batch_size, const int head_num,
@@ -573,6 +573,45 @@ void launchStoreKVcacheKernel(float *k_cache, float *v_cache, const float *K, co
     storeKVcacheKernel<<<grid, block, 0, stream>>>(k_cache, v_cache, K, V, start_pos, seq_len, batch_size, head_num, max_seq_len,
                                                             size_per_head);
 }
+
+/**
+ * grid: [seq_len, head_num / blockDim.y, batch_size * 2]  block(size_per_head / 4, 256 / (size_per_head / 4))
+ * k_cache v_cache: [batch_size, head_num, max_seq_len, size_per_head]
+ * K V : [batch_size, head_num, seq_len, size_per_head]
+ */
+__global__ void storeINT8KVcacheKernel(int8_t *__restrict__ k_cache, int8_t *__restrict__ v_cache, const int8_t *__restrict__ K,
+                                    const int8_t *__restrict__ V, const int start_pos, const int seq_len, const int batch_size, const int head_num,
+                                    const int max_seq_len, const int size_per_head)
+{
+    const int kv_id = blockIdx.z / batch_size;
+    const int batch_id = blockIdx.z % batch_size;
+    const int head_id = blockIdx.y * blockDim.y + threadIdx.y;
+    const int seq_id = blockIdx.x;
+    const int offset = batch_id * head_num * seq_len * size_per_head + head_id * seq_len * size_per_head + seq_id * size_per_head;
+    const int cache_offset = batch_id * head_num * max_seq_len * size_per_head + head_id * max_seq_len * size_per_head +
+                                (start_pos + seq_id) * size_per_head;
+    char4 *cache_ptr = (kv_id == 0) ? (char4 *)(k_cache + cache_offset) : (char4 *)(v_cache + cache_offset);
+    const char4 *data_ptr = (kv_id == 0) ? (const char4 *)(K + offset) : (const char4 *)(V + offset);
+    cache_ptr[threadIdx.x] = data_ptr[threadIdx.x];
+}
+
+void launchINT8StoreKVcacheKernel(int8_t *k_cache, int8_t *v_cache, const int8_t *K, const int8_t *V, const int start_pos, const int seq_len,
+                                const int batch_size, const int head_num, const int max_seq_len, const int size_per_head, cudaStream_t stream = 0)
+{
+    assert(size_per_head <= 1024);
+    dim3 block, grid;
+    block.x = size_per_head / 4;
+    assert(block.x >= 1);
+    block.y = 256 / block.x;
+    grid.x = seq_len;
+    grid.y = head_num / block.y;
+    assert(grid.y >= 1);
+    grid.z = batch_size * 2;
+
+    storeINT8KVcacheKernel<<<grid, block, 0, stream>>>(k_cache, v_cache, K, V, start_pos, seq_len, batch_size, head_num, max_seq_len,
+                                                            size_per_head);
+}
+
 
 /**
  * 反量化、softmax、量化
@@ -617,7 +656,7 @@ __global__ void blockSoftmaxKernel(int8_t * __restrict__ score, const int32_t * 
     }
     __syncthreads();
     sum_val = blockAllReduceSum<float>(sum_val);
-    
+
     if (threadIdx.x == 0) {
         score_scale[batch_id * head_num * seq_len_q + head_id * seq_len_q + seq_q_id] = 1.0f / (127.0f * (sum_val + 1e-7f));
     }
@@ -629,12 +668,14 @@ void launchBlockSoftmaxKernel(int8_t * score, const int32_t * qk, const float * 
     const int seq_len_q, const int seq_len_k, const int max_seq_len, cudaStream_t stream = 0)
 {
     dim3 grid(seq_len_q, head_num, batch_size);
-    dim3 block(256);
+    dim3 block(128);
     int shared_mem_size = sizeof(float) * seq_len_k;
     blockSoftmaxKernel<<<grid, block, shared_mem_size, stream>>>(score, qk, attn_mask, q_inp_scale, k_inp_scale, score_scale, attn_scale, 
         batch_size, head_num, seq_len_q, seq_len_k, max_seq_len);
 }
 
+
+__global__ void dequantizedVTransposeQuantized(float * __restrict__ v_buf, const int32_t * __restrict__ V);
 
 
 } // tinycudallama
