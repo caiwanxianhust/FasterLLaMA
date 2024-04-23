@@ -686,7 +686,7 @@ void launchBlockSoftmaxKernel(int8_t * score, const int32_t * qk, const float * 
  * v_weight_scale: [head_num * size_per_head, ], absmax / 127.0f
  * v_out_scale k_out_scale: [batch_size, seq_len, head_num], absmax / 127.0f
 */
-__global__ void warpDequantizedVTransposeQuantizedKernel(float * __restrict__ v_buf, const int32_t * __restrict__ V,
+__global__ void warpDequantizedVTransposeQuantizedKernel(int8_t * __restrict__ v_buf, const int32_t * __restrict__ V,
     const float * __restrict__ v_inp_scale, const float * __restrict__ v_weight_scale, float * __restrict__ v_out_scale, 
     const int batch_size, const int seq_len, const int head_num, const int size_per_head, const int warp_num)
 {
@@ -742,7 +742,7 @@ __global__ void warpDequantizedVTransposeQuantizedKernel(float * __restrict__ v_
  * v_weight_scale: [head_num * size_per_head, ], absmax / 127.0f
  * v_out_scale k_out_scale: [batch_size, seq_len, head_num], absmax / 127.0f
 */
-__global__ void blockDequantizedVTransposeQuantizedFor256Kernel(float * __restrict__ v_buf, const int32_t * __restrict__ V,
+__global__ void blockDequantizedVTransposeQuantizedFor256Kernel(int8_t * __restrict__ v_buf, const int32_t * __restrict__ V,
     const float * __restrict__ v_inp_scale, const float * __restrict__ v_weight_scale, float * __restrict__ v_out_scale, 
     const int batch_size, const int seq_len, const int head_num, const int size_per_head)
 {
@@ -769,7 +769,7 @@ __global__ void blockDequantizedVTransposeQuantizedFor256Kernel(float * __restri
     // quantized
     absmax = fmaxf(absmax, fmaxf(fabsf(val.x), fabsf(val.y)));
     __syncthreads();
-    absmax = warpAllReduce<MaxOp, float>(absmax);
+    absmax = blockAllReduceMax<float>(absmax);
     if (tid == 0)
     {
         out_scale_ptr[batch_id * head_num * seq_len + head_id * seq_len + seq_id] = absmax / 127.0f;
@@ -792,7 +792,7 @@ __global__ void blockDequantizedVTransposeQuantizedFor256Kernel(float * __restri
  * v_weight_scale: [head_num * size_per_head, ], absmax / 127.0f
  * v_out_scale k_out_scale: [batch_size, seq_len, head_num], absmax / 127.0f
 */
-__global__ void blockDequantizedVTransposeQuantizedKernel(float * __restrict__ v_buf, const int32_t * __restrict__ V,
+__global__ void blockDequantizedVTransposeQuantizedKernel(int8_t * __restrict__ v_buf, const int32_t * __restrict__ V,
     const float * __restrict__ v_inp_scale, const float * __restrict__ v_weight_scale, float * __restrict__ v_out_scale, 
     const int batch_size, const int seq_len, const int head_num, const int size_per_head)
 {
@@ -821,7 +821,7 @@ __global__ void blockDequantizedVTransposeQuantizedKernel(float * __restrict__ v
     // quantized
     absmax = fmaxf(absmax, fmaxf(fabsf(val.x), fmaxf(fabsf(val.y), fmaxf(fabsf(val.z), fabsf(val.w)))));
     __syncthreads();
-    absmax = warpAllReduce<MaxOp, float>(absmax);
+    absmax = blockAllReduceMax<float>(absmax);
     if (tid == 0)
     {
         out_scale_ptr[batch_id * head_num * seq_len + head_id * seq_len + seq_id] = absmax / 127.0f;
@@ -838,7 +838,7 @@ __global__ void blockDequantizedVTransposeQuantizedKernel(float * __restrict__ v
 }
 
 
-void launchDequantizedVTransposeQuantizedKernel(float * v_buf, const int32_t * V, const float * v_inp_scale, const float * v_weight_scale, 
+void launchDequantizedVTransposeQuantizedKernel(int8_t * v_buf, const int32_t * V, const float * v_inp_scale, const float * v_weight_scale, 
     float * v_out_scale, const int batch_size, const int seq_len, const int head_num, const int size_per_head, cudaStream_t stream = 0)
 {
     assert(size_per_head <= 1024);
