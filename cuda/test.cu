@@ -479,12 +479,14 @@ void testSoftmax()
     CHECK_CUDA_ERROR(cudaFree(d_qk));
 }
 
+
+
 void testDequantizedVTransposeQuantized()
 {
     const int batch_size = 4;
     const int seq_len = 4;
     const int head_num = 32;
-    const int size_per_head = 64;
+    const int size_per_head = 128;
     const int num_elements = batch_size * seq_len * head_num * size_per_head;
     const int hidden_units = head_num * size_per_head;
 
@@ -508,11 +510,12 @@ void testDequantizedVTransposeQuantized()
     }
 
     int mem_size = sizeof(int32_t) * num_elements + sizeof(float) * (batch_size * seq_len + hidden_units) +
-                   sizeof(int8_t) * num_elements + sizeof(float) * batch_size * head_num * seq_len;
+                   sizeof(int8_t) * num_elements + sizeof(float) * batch_size * head_num * size_per_head + sizeof(float) * num_elements;
 
     int32_t *d_v;
     float *d_v_inp_scale;
     float *d_v_weight_scale;
+    float *d_v_fp32_buf;
     int8_t *d_v_out;
     float *d_v_out_scale;
     device_malloc(&d_v, mem_size);
@@ -520,16 +523,18 @@ void testDequantizedVTransposeQuantized()
     d_v_weight_scale = (float *)(d_v_inp_scale + batch_size * seq_len);
     d_v_out = (int8_t *)(d_v_weight_scale + hidden_units);
     d_v_out_scale = (float *)(d_v_out + num_elements);
+    d_v_fp32_buf = (float *)(d_v_out_scale + batch_size * head_num * size_per_head);
 
-    float *h_v_out_scale = new float[batch_size * seq_len * head_num];
+    float *h_v_out_scale = new float[batch_size * size_per_head * head_num];
+    float *h_v_fp32_buf = new float[num_elements];
     int8_t *h_v_out = new int8_t[num_elements];
 
     CHECK_CUDA_ERROR(cudaMemcpy(d_v, v, sizeof(int32_t) * num_elements, cudaMemcpyHostToDevice));
     CHECK_CUDA_ERROR(cudaMemcpy(d_v_inp_scale, v_inp_scale, sizeof(float) * batch_size * seq_len, cudaMemcpyHostToDevice));
     CHECK_CUDA_ERROR(cudaMemcpy(d_v_weight_scale, v_weight_scale, sizeof(float) * hidden_units, cudaMemcpyHostToDevice));
     
-    tinycudallama::launchDequantizedVTransposeQuantizedKernel(d_v_out, d_v, d_v_inp_scale, d_v_weight_scale, d_v_out_scale, 
-        batch_size, seq_len, head_num, size_per_head);
+    tinycudallama::launchDequantizedVTransposeKernel(d_v_fp32_buf, d_v, d_v_inp_scale, d_v_weight_scale, batch_size, seq_len, head_num, size_per_head);
+    tinycudallama::launchBlockVQuantizedKernel(d_v_out, d_v_fp32_buf, d_v_out_scale, batch_size, seq_len, head_num, size_per_head);
 
     CHECK_CUDA_ERROR(cudaMemcpy(v_inp_scale, d_v_inp_scale, sizeof(float) * batch_size * seq_len, cudaMemcpyDeviceToHost));
     printVecInVec(v_inp_scale, 1, batch_size * seq_len, 1, batch_size * seq_len, "v_inp_scale");
@@ -537,8 +542,11 @@ void testDequantizedVTransposeQuantized()
     CHECK_CUDA_ERROR(cudaMemcpy(v_weight_scale, d_v_weight_scale, sizeof(float) * hidden_units, cudaMemcpyDeviceToHost));
     printVecInVec(v_weight_scale, head_num, size_per_head, 8, 10, "v_weight_scale");
 
-    CHECK_CUDA_ERROR(cudaMemcpy(h_v_out_scale, d_v_out_scale, sizeof(float) * batch_size * seq_len * head_num, cudaMemcpyDeviceToHost));
-    printVecInVec(h_v_out_scale, batch_size * head_num, seq_len, 5, seq_len, "h_v_out_scale");
+    CHECK_CUDA_ERROR(cudaMemcpy(h_v_fp32_buf, d_v_fp32_buf, sizeof(float) * num_elements, cudaMemcpyDeviceToHost));
+    printVecInVec(h_v_fp32_buf, batch_size * head_num * seq_len, size_per_head, 10, 10, "h_v_fp32_buf");
+
+    CHECK_CUDA_ERROR(cudaMemcpy(h_v_out_scale, d_v_out_scale, sizeof(float) * batch_size * size_per_head * head_num, cudaMemcpyDeviceToHost));
+    printVecInVec(h_v_out_scale, batch_size * head_num, size_per_head, 5, 10, "h_v_out_scale");
 
     CHECK_CUDA_ERROR(cudaMemcpy(h_v_out, d_v_out, sizeof(int8_t) * num_elements, cudaMemcpyDeviceToHost));
     printVecInVec(h_v_out, batch_size * head_num * seq_len, size_per_head, 10, 10, "h_v_out");
@@ -548,9 +556,123 @@ void testDequantizedVTransposeQuantized()
     delete[] v_weight_scale;
     delete[] h_v_out;
     delete[] h_v_out_scale;
+    delete[] h_v_fp32_buf;
 
     CHECK_CUDA_ERROR(cudaFree(d_v));
 }
+
+void testVQuantized()
+{
+    const int batch_size = 4;
+    const int seq_len = 4;
+    const int head_num = 32;
+    const int size_per_head = 128;
+    const int num_elements = batch_size * head_num * seq_len * size_per_head;
+
+    float *v = new float[num_elements];
+    for (int i = 0; i < num_elements; ++i)
+    {
+        v[i] = (i % 2 == 0) ? i : (-1 * i);
+    }
+    printVecInVec(v, batch_size * head_num * seq_len, size_per_head, 2, 10, "v");
+
+    float *d_v;
+    float *d_v_out_scale;
+    int8_t *d_v_out;
+    const int mem_size = sizeof(float) * num_elements + sizeof(float) * batch_size * head_num * size_per_head + sizeof(int8_t) * num_elements;
+
+    device_malloc(&d_v, mem_size);
+    d_v_out_scale = (float *)(d_v + num_elements);
+    d_v_out = (int8_t *)(d_v_out_scale + batch_size * head_num * size_per_head);
+
+    CHECK_CUDA_ERROR(cudaMemcpy(d_v, v, sizeof(float) * num_elements, cudaMemcpyHostToDevice));
+
+    tinycudallama::launchBlockVQuantizedKernel(d_v_out, d_v, d_v_out_scale, batch_size, seq_len, head_num, size_per_head);
+
+    float *h_v_out_scale = new float[batch_size * head_num * size_per_head];
+    int8_t *h_v_out = new int8_t[num_elements];
+
+    CHECK_CUDA_ERROR(cudaMemcpy(h_v_out_scale, d_v_out_scale, sizeof(float) * batch_size * size_per_head * head_num, cudaMemcpyDeviceToHost));
+    printVecInVec(h_v_out_scale, batch_size * head_num, size_per_head, 5, 10, "h_v_out_scale");
+
+    CHECK_CUDA_ERROR(cudaMemcpy(h_v_out, d_v_out, sizeof(int8_t) * num_elements, cudaMemcpyDeviceToHost));
+    printVecInVec(h_v_out, batch_size * seq_len * head_num, size_per_head, 10, 10, "h_v_out");
+
+    delete[] v;
+    delete[] h_v_out;
+    delete[] h_v_out_scale;
+
+    CHECK_CUDA_ERROR(cudaFree(d_v));
+}
+
+void testDequantizedAttnQuantizedTranspose()
+{
+    const int batch_size = 4;
+    const int seq_len = 4;
+    const int head_num = 32;
+    const int size_per_head = 128;
+    const int num_elements = batch_size * head_num * seq_len * size_per_head;
+
+    int32_t *h_attn = new int32_t[num_elements];
+    for (int i = 0; i < num_elements; ++i)
+    {
+        h_attn[i] = (i % 2 == 0) ? i : (-2 * i + 100);
+    }
+    printVecInVec(h_attn, batch_size * head_num * seq_len, size_per_head, 2, 10, "h_attn");
+
+    float *h_score_scale = new float[batch_size * head_num * seq_len];
+    for (int i = 0; i < batch_size * head_num * seq_len; ++i)
+    {
+        h_score_scale[i] = (i % 2 == 0) ? (i - 10) : (powf((float)i, 0.5f) + 10.0f);
+    }
+
+    float *h_v_scale = new float[batch_size * head_num * size_per_head];
+    for (int i = 0; i < batch_size * head_num * size_per_head; ++i)
+    {
+        h_v_scale[i] = (i % 2 == 0) ? (i - 10) : (powf((float)i, 0.3f) + 10.0f);
+    }
+
+    int32_t *d_attn;
+    float *d_score_scale;
+    float *d_v_scale;
+    float *d_attn_out_scale;
+    int8_t *d_attn_out;
+
+    int mem_size = sizeof(int32_t) * num_elements + sizeof(float) * batch_size * head_num * seq_len + 
+        sizeof(float) * batch_size * head_num * size_per_head + sizeof(float) * batch_size * seq_len + 
+        sizeof(int8_t) * num_elements;
+    
+    device_malloc(&d_attn, mem_size);
+    d_score_scale = (float *)(d_attn + num_elements);
+    d_v_scale = (float *)(d_score_scale + batch_size * head_num * seq_len);
+    d_attn_out_scale = (float *)(d_v_scale + batch_size * head_num * size_per_head);
+    d_attn_out = (int8_t *)(d_attn_out_scale + batch_size * seq_len);
+
+    CHECK_CUDA_ERROR(cudaMemcpy(d_attn, h_attn, sizeof(int32_t) * num_elements, cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(d_score_scale, h_score_scale, sizeof(float) * batch_size * head_num * seq_len, cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(d_v_scale, h_v_scale, sizeof(float) * batch_size * head_num * size_per_head, cudaMemcpyHostToDevice));
+
+    tinycudallama::launchDequantizedAttnQuantizedTransposeKernel(d_attn_out, d_attn, d_score_scale, d_v_scale, d_attn_out_scale, 
+        batch_size, head_num, seq_len, size_per_head);
+
+    float *h_attn_out_scale = new float[batch_size * seq_len];
+    int8_t *h_attn_out = new int8_t[num_elements];
+
+    CHECK_CUDA_ERROR(cudaMemcpy(h_attn_out_scale, d_attn_out_scale, sizeof(float) * batch_size * seq_len, cudaMemcpyDeviceToHost));
+    printVecInVec(h_attn_out_scale, batch_size, seq_len, batch_size, seq_len, "h_attn_out_scale");
+
+    CHECK_CUDA_ERROR(cudaMemcpy(h_attn_out, d_attn_out, sizeof(int8_t) * num_elements, cudaMemcpyDeviceToHost));
+    printVecInVec(h_attn_out, batch_size * seq_len, head_num * size_per_head, 10, 10, "h_attn_out");
+
+    delete[] h_attn;
+    delete[] h_score_scale;
+    delete[] h_v_scale;
+    delete[] h_attn_out;
+    delete[] h_attn_out_scale;
+
+    CHECK_CUDA_ERROR(cudaFree(d_attn));
+}
+
 
 
 int main()
@@ -569,7 +691,11 @@ int main()
 
     // testSoftmax();
 
-    testDequantizedVTransposeQuantized();
+    // testDequantizedVTransposeQuantized();
+
+    // testVQuantized();
+
+    testDequantizedAttnQuantizedTranspose();
 
 
     return 0;
