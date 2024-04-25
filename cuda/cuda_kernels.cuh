@@ -895,17 +895,87 @@ __global__ void warpDequantizedAttnQuantizedTransposeKernel(int8_t * __restrict_
     }
 }
 
+/** 反量化、量化、转置
+ * grid(seq_len, batch_size) block(size_per_head)
+ * attn_buf:[batch_size, seq_len, head_num, size_per_head]
+ * attn:[batch_size, head_num, seq_len, size_per_head]
+ * score_scale:[batch_size, head_num, seq_len]
+ * v_scale:[batch_size, head_num, size_per_head]
+ * attn_out_scale:[batch_size, seq_len]
+*/
+__global__ void blockDequantizedAttnQuantizedTransposeKernel(int8_t * __restrict__ attn_buf, const int32_t * __restrict__ attn, 
+    const float * __restrict__ score_scale, const float * __restrict__ v_scale, float * __restrict__ attn_out_scale, const int batch_size, 
+    const int head_num, const int seq_len, const int size_per_head)
+{
+    const int batch_id = blockIdx.y;
+    const int seq_id = blockIdx.x;
+    int offset;
+    float score_scale_val;
+    int scale_offset;
+    float val;
+    int8_t out_val;
+    float absmax = -1e9f;
+    int target_idx;
+    if (threadIdx.x < size_per_head) {
+        for (int head_id=0; head_id<head_num; ++head_id) {
+            offset = batch_id * head_num * seq_len * size_per_head + head_id * seq_len * size_per_head + seq_id * size_per_head;
+            score_scale_val = __ldg(score_scale + batch_id * head_num * seq_len + head_id * seq_len + seq_id);
+            scale_offset = batch_id * head_num * size_per_head + head_id * size_per_head;
+            val = static_cast<float>(attn[offset + threadIdx.x]) * score_scale_val * __ldg(v_scale + scale_offset + threadIdx.x);
+            absmax = max(absmax, fabsf(val));
+        }
+        __syncthreads();
+        absmax = blockAllReduceMax<float>(absmax);
+
+        if (threadIdx.x == 0) {  attn_out_scale[batch_id * seq_len + seq_id] = absmax / 127.0f;  }
+
+        for (int head_id=0; head_id<head_num; ++head_id) {
+            offset = batch_id * head_num * seq_len * size_per_head + head_id * seq_len * size_per_head + seq_id * size_per_head;
+            score_scale_val = __ldg(score_scale + batch_id * head_num * seq_len + head_id * seq_len + seq_id);
+            scale_offset = batch_id * head_num * size_per_head + head_id * size_per_head;
+            val = static_cast<float>(attn[offset + threadIdx.x]) * score_scale_val * __ldg(v_scale + scale_offset + threadIdx.x);
+            out_val = float_to_int8_rn(val * 127.0f / absmax);
+            target_idx = batch_id * seq_len * head_num * size_per_head + seq_id * head_num * size_per_head + head_id * size_per_head + threadIdx.x;
+            attn_buf[target_idx] = out_val;
+        }     
+    }
+}
+
 void launchDequantizedAttnQuantizedTransposeKernel(int8_t * __restrict__ attn_buf, const int32_t * __restrict__ attn, 
     const float * __restrict__ score_scale, const float * __restrict__ v_scale, float * __restrict__ attn_out_scale, const int batch_size, 
     const int head_num, const int seq_len, const int size_per_head, cudaStream_t stream = 0)
 {
+    assert(size_per_head <= 1024);
     if (head_num <= 32 && size_per_head <= 128) {
         dim3 grid(seq_len, batch_size);
         dim3 block(32 * head_num);
         warpDequantizedAttnQuantizedTransposeKernel<<<grid, block, 0, stream>>>(attn_buf, attn, score_scale, v_scale, attn_out_scale, 
             batch_size, head_num, seq_len, size_per_head);
     }
-
+    else if (size_per_head > 512) {
+        dim3 grid(seq_len, batch_size);
+        dim3 block(1024);
+        blockDequantizedAttnQuantizedTransposeKernel<<<grid, block, 0, stream>>>(attn_buf, attn, score_scale, v_scale, attn_out_scale, 
+            batch_size, head_num, seq_len, size_per_head);
+    }
+    else if (size_per_head > 256) {
+        dim3 grid(seq_len, batch_size);
+        dim3 block(512);
+        blockDequantizedAttnQuantizedTransposeKernel<<<grid, block, 0, stream>>>(attn_buf, attn, score_scale, v_scale, attn_out_scale, 
+            batch_size, head_num, seq_len, size_per_head);
+    }
+    else if (size_per_head > 128) {
+        dim3 grid(seq_len, batch_size);
+        dim3 block(256);
+        blockDequantizedAttnQuantizedTransposeKernel<<<grid, block, 0, stream>>>(attn_buf, attn, score_scale, v_scale, attn_out_scale, 
+            batch_size, head_num, seq_len, size_per_head);
+    }
+    else {
+        dim3 grid(seq_len, batch_size);
+        dim3 block(128);
+        blockDequantizedAttnQuantizedTransposeKernel<<<grid, block, 0, stream>>>(attn_buf, attn, score_scale, v_scale, attn_out_scale, 
+            batch_size, head_num, seq_len, size_per_head);
+    }
 }
 
 
