@@ -12,6 +12,14 @@ namespace
     constexpr int block_size = 128;
 }
 
+static inline __device__ int8_t float_to_int8_rn(float x)
+{
+    uint32_t dst;
+    asm volatile("cvt.rni.sat.s8.f32 %0, %1;"
+                    : "=r"(dst)
+                    : "f"(x));
+    return reinterpret_cast<const int8_t &>(dst);
+}
 template <typename T>
 struct SumOp
 {
@@ -80,6 +88,12 @@ __inline__ __device__ T blockAllReduceMax(T val)
     return result;
 }
 
+/** resNorm
+ * grid(batch_size * seq_len)  block(128)
+ * output: [batch_size, seq_len, hidden_units]
+ * input: [batch_size, seq_len, hidden_units]
+ * gamma: [hidden_units, ]
+*/
 template <typename DataType>
 __global__ void resNormKernel(DataType *__restrict__ output, const DataType *__restrict__ input,
                                 const DataType *__restrict__ gamma, const float eps, const int hidden_units)
@@ -142,54 +156,110 @@ void launchResNormKernel(DataType *output, const DataType *input, const DataType
                             const int m, const int n, cudaStream_t stream = 0)
 {
     dim3 grid(m);
-    dim3 block(block_size);
+    dim3 block(128);
     resNormKernel<DataType><<<grid, block, 0, stream>>>(output, input, gamma, eps, n);
 }
 
-#define WARP_SIZE 32
-// kernel code
-static __global__ void rms_norm_f32(const float *x, float *dst, const int ncols, const float *gamma, const float eps)
+
+/** resNorm、量化
+ * grid(batch_size * seq_len)  block(128)
+ * output: [batch_size, seq_len, hidden_units]
+ * input: [batch_size, seq_len, hidden_units]
+ * gamma: [hidden_units, ]
+*/
+template <typename DataType>
+__global__ void resNormQuantizedKernel(int8_t *__restrict__ output, const DataType *__restrict__ input, const DataType *__restrict__ gamma, 
+    float * __restrict__ norm_scale, const float eps, const int hidden_units)
 {
-    const int row = blockIdx.x * blockDim.y + threadIdx.y;
-    const int tid = threadIdx.x;
+    const int row_id = blockIdx.x;
+    const int offset = row_id * hidden_units;
 
-    float tmp = 0.0f; // partial sum for thread in warp
-    // 一个线程求和(ncols/WARP_SIZE)个数据的x^2
-    for (int col = tid; col < ncols; col += WARP_SIZE)
-    {
-        const float xi = x[row * ncols + col];
-        tmp += xi * xi;
+    extern __shared__ float s_buf[];    // hiddent_units
+    float val;
+    float mean = 0.0f;
+    float absmax = -1e9f;
+    char4 out_val;
+
+    for (int tid = threadIdx.x; tid < hidden_units; tid += blockDim.x) {
+        val = static_cast<float>(input[offset + tid]);
+        s_buf[tid] = val;
+        mean += val * val;
+        absmax = max(absmax, fabsf(val * static_cast<float>(__ldg(gamma + tid))));
     }
+    __syncthreads();
 
-    // sum up partial sums
-    // 一个线程束(32个线程)内的归约求和
-#pragma unroll
-    for (int mask = 16; mask > 0; mask >>= 1)
-    {
-        tmp += __shfl_xor_sync(0xffffffff, tmp, mask, 32);
-    }
+    mean = blockAllReduceSum<float>(mean);
+    mean = rsqrtf(mean / hidden_units + eps);
 
-    const float mean = tmp / ncols;         // mean(x^2)
-    const float scale = rsqrtf(mean + eps); // 1/根号mean
-    // 算完之后写回原数组
-    for (int col = tid; col < ncols; col += WARP_SIZE)
-    {
-        dst[row * ncols + col] = scale * x[row * ncols + col] * gamma[col];
+    absmax = blockAllReduceMax<float>(absmax);
+    absmax *= mean;
+    if (threadIdx.x == 0) {  norm_scale[blockIdx.x] = absmax / 127.0f;  }
+
+    int target_idx;   
+    char4 *out_ptr = (char4 *)output; 
+    for (int tid = (threadIdx.x << 2); tid < hidden_units; tid += (blockDim.x << 2)) {
+        out_val.x = float_to_int8_rn(s_buf[tid] * mean * static_cast<float>(__ldg(gamma + tid)) * 127.0f / absmax);
+        out_val.y = float_to_int8_rn(s_buf[tid + 1] * mean * static_cast<float>(__ldg(gamma + tid + 1)) * 127.0f / absmax);
+        out_val.z = float_to_int8_rn(s_buf[tid + 2] * mean * static_cast<float>(__ldg(gamma + tid + 2)) * 127.0f / absmax);
+        out_val.w = float_to_int8_rn(s_buf[tid + 3] * mean * static_cast<float>(__ldg(gamma + tid + 3)) * 127.0f / absmax);
+        target_idx = row_id * hidden_units + tid;
+        out_ptr[target_idx >> 2] = out_val;
     }
 }
 
-// call kernel
-static void rms_norm_f32_cuda(const float *x, float *dst, const int ncols, const int nrows, const float *gamma, const float eps, cudaStream_t stream = 0)
+template <>
+__global__ void resNormQuantizedKernel(int8_t *__restrict__ output, const half *__restrict__ input, const half *__restrict__ gamma, 
+    float * __restrict__ norm_scale, const float eps, const int hidden_units)
 {
-    assert(ncols % WARP_SIZE == 0);
-    const dim3 block_dims(WARP_SIZE, 1, 1); //(32,1,1)
-    // 所以调用的cuda的gridDim =(nrows,1,1) ,blockDim = (32,1,1)
-    // 也就是说一个block处理一个row的数据，即每32个线程处理一行数据 ，共计nrows行
-    rms_norm_f32<<<nrows, block_dims, 0, stream>>>(x, dst, ncols, gamma, eps);
+    const int row_id = blockIdx.x;
+    const int offset = row_id * hidden_units;
+
+    extern __shared__ float s_buf[];    // hiddent_units
+    float val;
+    float mean = 0.0f;
+    float absmax = -1e9f;
+    char4 out_val;
+
+    for (int tid = threadIdx.x; tid < hidden_units; tid += blockDim.x) {
+        val = static_cast<float>(input[offset + tid]);
+        s_buf[tid] = val;
+        mean += val * val;
+        absmax = max(absmax, fabsf(val * __half2float(__ldg(gamma + tid))));
+    }
+    __syncthreads();
+
+    mean = blockAllReduceSum<float>(mean);
+    mean = rsqrtf(mean / hidden_units + eps);
+
+    absmax = blockAllReduceMax<float>(absmax);
+    absmax *= mean;
+    if (threadIdx.x == 0) {  norm_scale[blockIdx.x] = absmax / 127.0f;  }
+
+    int target_idx;   
+    char4 *out_ptr = (char4 *)output; 
+    for (int tid = (threadIdx.x << 2); tid < hidden_units; tid += (blockDim.x << 2)) {
+        out_val.x = float_to_int8_rn(s_buf[tid] * mean * __half2float(__ldg(gamma + tid)) * 127.0f / absmax);
+        out_val.y = float_to_int8_rn(s_buf[tid + 1] * mean * __half2float(__ldg(gamma + tid + 1)) * 127.0f / absmax);
+        out_val.z = float_to_int8_rn(s_buf[tid + 2] * mean * __half2float(__ldg(gamma + tid + 2)) * 127.0f / absmax);
+        out_val.w = float_to_int8_rn(s_buf[tid + 3] * mean * __half2float(__ldg(gamma + tid + 3)) * 127.0f / absmax);
+        target_idx = row_id * hidden_units + tid;
+        out_ptr[target_idx >> 2] = out_val;
+    }
 }
 
-/**
+template <typename DataType>
+void launchResNormQuantizedKernel(int8_t * output, const DataType * input, const DataType * gamma, 
+    float * norm_scale, const float eps, const int nrows, const int hidden_units, cudaStream_t stream = 0)
+{
+    assert(hidden_units % 4 == 0);
+    int mem_size = sizeof(float) * hidden_units;
+    resNormQuantizedKernel<DataType><<<nrows, hidden_units, mem_size, stream>>>(output, input, gamma, norm_scale, eps, hidden_units);
+}
+
+
+/** precomputeFreqsCis
  * grid(seq_len)  block(block_size) for size_per_head/2 >= block_size(128)
+ * freq_cis: [seq_len, size_per_head]
  */
 __global__ void precomputeFreqsCis(float *freq_cis, const int size_per_head)
 {
@@ -226,7 +296,7 @@ void launchPrecomputeFreqsCis(float *freq_cis, const int size_per_head, const in
 {
     if ((size_per_head / 2) < 128)
     {
-        int warp_num = block_size / 32;
+        int warp_num = 128 / 32;
         int grid_size = (seq_len + warp_num - 1) / warp_num;
         dim3 grid(grid_size);
         dim3 block(32, warp_num);
@@ -235,12 +305,13 @@ void launchPrecomputeFreqsCis(float *freq_cis, const int size_per_head, const in
     else
     {
         dim3 grid(seq_len);
-        dim3 block(block_size);
+        dim3 block(128);
         precomputeFreqsCis<<<grid, block, 0, stream>>>(freq_cis, size_per_head);
     }
 }
 
-/**
+/** embeddingLookingUp
+ * grid(batch_size, seq_len) block(128)
  * from_tensor: [batch_size, seq_len, hidden_units]
  * word_ids:    [batch_size, seq_len]
  */
@@ -263,19 +334,16 @@ void launchEmbeddingLookingUpKernel(DataType *from_tensor, const DataType *embed
                                     const int *word_ids, const int hidden_units, const int batch_size, const int seq_len, cudaStream_t stream = 0)
 {
     dim3 grid(batch_size, seq_len);
-    dim3 block(block_size);
+    dim3 block(128);
     embeddingLookingUpKernel<DataType><<<grid, block, 0, stream>>>(from_tensor, embedding_table, word_ids, hidden_units, seq_len);
 }
 
-static inline __device__ int8_t float_to_int8_rn(float x)
-{
-    uint32_t dst;
-    asm volatile("cvt.rni.sat.s8.f32 %0, %1;"
-                    : "=r"(dst)
-                    : "f"(x));
-    return reinterpret_cast<const int8_t &>(dst);
-}
 
+/** perChannel 量化
+ * src: [rows, clos]
+ * dst: [rows, clos]
+ * scale_ptr: [rows, ]
+*/
 template <typename DataType>
 __global__ void perChannelQuantizedKernel(int8_t *__restrict__ dst, const DataType *__restrict__ src, float *__restrict__ scale_ptr,
                                             const int hidden_size)
@@ -314,7 +382,7 @@ void perChannelQuantizedKernelLauncher(int8_t *dst, const DataType *src, float *
                                         const int nrows, cudaStream_t stream = 0)
 {
     dim3 grid(nrows);
-    dim3 block(block_size);
+    dim3 block(128);
     perChannelQuantizedKernel<DataType><<<grid, block, 0, stream>>>(dst, src, scale_ptr, hidden_size);
 }
 
@@ -976,6 +1044,119 @@ void launchDequantizedAttnQuantizedTransposeKernel(int8_t * __restrict__ attn_bu
         blockDequantizedAttnQuantizedTransposeKernel<<<grid, block, 0, stream>>>(attn_buf, attn, score_scale, v_scale, attn_out_scale, 
             batch_size, head_num, seq_len, size_per_head);
     }
+}
+
+/**反量化、残差结构、量化
+ * grid(seq_len * batch_size) block(128)
+ * norm_out: [batch_size, seq_len, hidden_units]
+ * from_temsor: [batch_size, seq_len, hidden_units]
+ * attn_out: [batch_size, seq_len, hidden_units]
+ * attn_out_scale: [batch_size, seq_len]
+ * attn_weight_scale: [hidden_units]
+ * gamma: [hidden_units]
+ * norm_scale: [batch_size, seq_len]
+*/
+template <typename DataType>
+__global__ void dequantizedResidualResNormQuantizedKernel(int8_t * __restrict__ norm_out, const DataType * __restrict__ from_temsor, 
+    const int32_t * __restrict__ attn_out, const float * __restrict__ attn_out_scale, const float * __restrict__ attn_weight_scale, 
+    const DataType * __restrict__ gamma, float * __restrict__ norm_scale, const float eps, const int hidden_units)
+{
+    const int row_id = blockIdx.x;
+    const int offset = row_id * hidden_units;
+    const float attn_scale_val = __ldg(attn_out_scale + row_id);
+
+    extern __shared__ float s_buf[];    // hiddent_units
+    float val;
+    float mean = 0.0f;
+    float absmax = -1e9f;
+    char4 out_val;
+
+    for (int tid = threadIdx.x; tid < hidden_units; tid += blockDim.x) {
+        val = static_cast<float>(attn_out[offset + tid]) * attn_scale_val * __ldg(attn_weight_scale + tid) + static_cast<float>(from_temsor[offset + tid]);
+        s_buf[tid] = val;
+        mean += val * val;
+        absmax = max(absmax, fabsf(val * static_cast<float>(__ldg(gamma + tid))));
+    }
+    __syncthreads();
+
+    mean = blockAllReduceSum<float>(mean / hidden_units);
+    mean = rsqrtf(mean + eps);
+
+    absmax = blockAllReduceMax<float>(absmax);
+    absmax *= mean;
+    if (threadIdx.x == 0) {  norm_scale[blockIdx.x] = absmax / 127.0f;  }
+
+    int target_idx;   
+    char4 *out_ptr = (char4 *)norm_out; 
+    for (int tid = (threadIdx.x << 2); tid < hidden_units; tid += (blockDim.x << 2)) {
+        out_val.x = float_to_int8_rn(s_buf[tid] * mean * static_cast<float>(__ldg(gamma + tid)) * 127.0f / absmax);
+        out_val.y = float_to_int8_rn(s_buf[tid + 1] * mean * static_cast<float>(__ldg(gamma + tid + 1)) * 127.0f / absmax);
+        out_val.z = float_to_int8_rn(s_buf[tid + 2] * mean * static_cast<float>(__ldg(gamma + tid + 2)) * 127.0f / absmax);
+        out_val.w = float_to_int8_rn(s_buf[tid + 3] * mean * static_cast<float>(__ldg(gamma + tid + 3)) * 127.0f / absmax);
+        target_idx = row_id * hidden_units + tid;
+        out_ptr[target_idx >> 2] = out_val;
+    }
+}
+
+/**反量化、残差结构、量化
+ * grid(seq_len * batch_size) block(128)
+ * norm_out: [batch_size, seq_len, hidden_units]
+ * from_temsor: [batch_size, seq_len, hidden_units]
+ * attn_out: [batch_size, seq_len, hidden_units]
+ * attn_out_scale: [batch_size, seq_len]
+ * attn_weight_scale: [hidden_units]
+ * gamma: [hidden_units]
+*/
+template <>
+__global__ void dequantizedResidualResNormQuantizedKernel(int8_t * __restrict__ norm_out, const half * __restrict__ from_temsor, 
+    const int32_t * __restrict__ attn_out, const float * __restrict__ attn_out_scale, const float * __restrict__ attn_weight_scale, 
+    const half * __restrict__ gamma, float * __restrict__ norm_scale, const float eps, const int hidden_units)
+{
+    const int row_id = blockIdx.x;
+    const int offset = row_id * hidden_units;
+    const float attn_scale_val = __ldg(attn_out_scale + row_id);
+
+    extern __shared__ float s_buf[];    // hiddent_units
+    float val;
+    float mean = 0.0f;
+    float absmax = -1e9f;
+    char4 out_val;
+
+    for (int tid = threadIdx.x; tid < hidden_units; tid += blockDim.x) {
+        val = static_cast<float>(attn_out[offset + tid]) * attn_scale_val * __ldg(attn_weight_scale + tid) + __half2float(from_temsor[offset + tid]);
+        s_buf[tid] = val;
+        mean += val * val;
+        absmax = max(absmax, fabsf(val * __half2float(__ldg(gamma + tid))));
+    }
+    __syncthreads();
+
+    mean = blockAllReduceSum<float>(mean / hidden_units);
+    mean = rsqrtf(mean + eps);
+
+    absmax = blockAllReduceMax<float>(absmax);
+    absmax *= mean;
+    if (threadIdx.x == 0) {  norm_scale[blockIdx.x] = absmax / 127.0f;  }
+
+    int target_idx;   
+    char4 *out_ptr = (char4 *)norm_out; 
+    for (int tid = (threadIdx.x << 2); tid < hidden_units; tid += (blockDim.x << 2)) {
+        out_val.x = float_to_int8_rn(s_buf[tid] * mean * __half2float(__ldg(gamma + tid)) * 127.0 / absmax);
+        out_val.y = float_to_int8_rn(s_buf[tid + 1] * mean * __half2float(__ldg(gamma + tid + 1)) * 127.0 / absmax);
+        out_val.z = float_to_int8_rn(s_buf[tid + 2] * mean * __half2float(__ldg(gamma + tid + 2)) * 127.0 / absmax);
+        out_val.w = float_to_int8_rn(s_buf[tid + 3] * mean * __half2float(__ldg(gamma + tid + 3)) * 127.0 / absmax);
+        target_idx = row_id * hidden_units + tid;
+        out_ptr[target_idx >> 2] = out_val;
+    }
+}
+
+template <typename DataType>
+void launchDequantizedResidualResNormQuantized(int8_t * norm_out, const DataType * from_temsor, const int32_t * attn_out, const float * attn_out_scale, 
+    const float * attn_weight_scale, const DataType * gamma, float * norm_scale, const float eps, const int rows, const int hidden_units, cudaStream_t stream = 0)
+{
+    assert(hidden_units % 4 == 0);
+    int mem_size = hidden_units * sizeof(float);
+    dequantizedResidualResNormQuantizedKernel<DataType><<<rows, 128, mem_size, stream>>>(norm_out, from_temsor, attn_out, attn_out_scale, attn_weight_scale, gamma, 
+        norm_scale, eps, hidden_units);
 }
 
 
