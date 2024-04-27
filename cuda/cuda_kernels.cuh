@@ -1049,6 +1049,7 @@ void launchDequantizedAttnQuantizedTransposeKernel(int8_t * __restrict__ attn_bu
 /**反量化、残差结构、量化
  * grid(seq_len * batch_size) block(128)
  * norm_out: [batch_size, seq_len, hidden_units]
+ * ffn_tensor: [batch_size, seq_len, hidden_units]
  * from_temsor: [batch_size, seq_len, hidden_units]
  * attn_out: [batch_size, seq_len, hidden_units]
  * attn_out_scale: [batch_size, seq_len]
@@ -1057,7 +1058,7 @@ void launchDequantizedAttnQuantizedTransposeKernel(int8_t * __restrict__ attn_bu
  * norm_scale: [batch_size, seq_len]
 */
 template <typename DataType>
-__global__ void dequantizedResidualResNormQuantizedKernel(int8_t * __restrict__ norm_out, const DataType * __restrict__ from_temsor, 
+__global__ void dequantizedResidualResNormQuantizedKernel(int8_t * __restrict__ norm_out, DataType * __restrict__ ffn_tensor, const DataType * __restrict__ from_temsor, 
     const int32_t * __restrict__ attn_out, const float * __restrict__ attn_out_scale, const float * __restrict__ attn_weight_scale, 
     const DataType * __restrict__ gamma, float * __restrict__ norm_scale, const float eps, const int hidden_units)
 {
@@ -1074,6 +1075,7 @@ __global__ void dequantizedResidualResNormQuantizedKernel(int8_t * __restrict__ 
     for (int tid = threadIdx.x; tid < hidden_units; tid += blockDim.x) {
         val = static_cast<float>(attn_out[offset + tid]) * attn_scale_val * __ldg(attn_weight_scale + tid) + static_cast<float>(from_temsor[offset + tid]);
         s_buf[tid] = val;
+        ffn_tensor[offset + tid] = static_cast<DataType>(val);
         mean += val * val;
         absmax = max(absmax, fabsf(val * static_cast<float>(__ldg(gamma + tid))));
     }
@@ -1101,6 +1103,7 @@ __global__ void dequantizedResidualResNormQuantizedKernel(int8_t * __restrict__ 
 /**反量化、残差结构、量化
  * grid(seq_len * batch_size) block(128)
  * norm_out: [batch_size, seq_len, hidden_units]
+ * ffn_tensor: [batch_size, seq_len, hidden_units]
  * from_temsor: [batch_size, seq_len, hidden_units]
  * attn_out: [batch_size, seq_len, hidden_units]
  * attn_out_scale: [batch_size, seq_len]
@@ -1108,7 +1111,7 @@ __global__ void dequantizedResidualResNormQuantizedKernel(int8_t * __restrict__ 
  * gamma: [hidden_units]
 */
 template <>
-__global__ void dequantizedResidualResNormQuantizedKernel(int8_t * __restrict__ norm_out, const half * __restrict__ from_temsor, 
+__global__ void dequantizedResidualResNormQuantizedKernel(int8_t * __restrict__ norm_out, half * __restrict__ ffn_tensor, const half * __restrict__ from_temsor, 
     const int32_t * __restrict__ attn_out, const float * __restrict__ attn_out_scale, const float * __restrict__ attn_weight_scale, 
     const half * __restrict__ gamma, float * __restrict__ norm_scale, const float eps, const int hidden_units)
 {
@@ -1125,6 +1128,7 @@ __global__ void dequantizedResidualResNormQuantizedKernel(int8_t * __restrict__ 
     for (int tid = threadIdx.x; tid < hidden_units; tid += blockDim.x) {
         val = static_cast<float>(attn_out[offset + tid]) * attn_scale_val * __ldg(attn_weight_scale + tid) + __half2float(from_temsor[offset + tid]);
         s_buf[tid] = val;
+        ffn_tensor[offset + tid] = __float2half(val);
         mean += val * val;
         absmax = max(absmax, fabsf(val * __half2float(__ldg(gamma + tid))));
     }
@@ -1150,12 +1154,12 @@ __global__ void dequantizedResidualResNormQuantizedKernel(int8_t * __restrict__ 
 }
 
 template <typename DataType>
-void launchDequantizedResidualResNormQuantized(int8_t * norm_out, const DataType * from_temsor, const int32_t * attn_out, const float * attn_out_scale, 
+void launchDequantizedResidualResNormQuantized(int8_t * norm_out, DataType * __restrict__ ffn_tensor, const DataType * from_temsor, const int32_t * attn_out, const float * attn_out_scale, 
     const float * attn_weight_scale, const DataType * gamma, float * norm_scale, const float eps, const int rows, const int hidden_units, cudaStream_t stream = 0)
 {
     assert(hidden_units % 4 == 0);
     int mem_size = hidden_units * sizeof(float);
-    dequantizedResidualResNormQuantizedKernel<DataType><<<rows, 128, mem_size, stream>>>(norm_out, from_temsor, attn_out, attn_out_scale, attn_weight_scale, gamma, 
+    dequantizedResidualResNormQuantizedKernel<DataType><<<rows, 128, mem_size, stream>>>(norm_out, ffn_tensor, from_temsor, attn_out, attn_out_scale, attn_weight_scale, gamma, 
         norm_scale, eps, hidden_units);
 }
 

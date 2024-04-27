@@ -681,33 +681,33 @@ void testDequantizedResidualResNormQuantized()
     int32_t *h_attn = new int32_t[num_elements];
     for (int i = 0; i < num_elements; ++i)
     {
-        h_attn[i] = (i % 2 == 0) ? (i%7000) : (-2 * (i%6000) + 100);
+        h_attn[i] = (i % 2 == 0) ? (i%70) : (-2 * (i%60) + 1);
     }
     printVecInVec(h_attn, rows, hidden_units, 2, 10, "h_attn");
 
     float *h_from_tensor = new float[num_elements];
     for (int i = 0; i < num_elements; ++i)
     {
-        h_from_tensor[i] = (i % 2 == 0) ? (i%8000) : (-3.5 * (i%7000) + 100);
+        h_from_tensor[i] = (i % 2 == 0) ? (i%80) : (-3.5 * (i%70) + 1);
     }
     printVecInVec(h_from_tensor, rows, hidden_units, 2, 10, "h_from_tensor");
 
     float *h_attn_scale = new float[rows];
     for (int i = 0; i < rows; ++i)
     {
-        h_attn_scale[i] = (i % 2 == 0) ? (i - 10) : (powf((float)i, 0.5f) + 10.0f);
+        h_attn_scale[i] = (i % 2 == 0) ? (0.2f * (powf((float)i, 0.4f)) + 0.1f) : (powf((float)i, 0.5f) + 0.1f);
     }
 
     float *h_weight_scale = new float[hidden_units];
     for (int i = 0; i < hidden_units; ++i)
     {
-        h_weight_scale[i] = (i % 2 == 0) ? (i - 10) : (powf((float)i, 0.3f) + 10.0f);
+        h_weight_scale[i] = (i % 2 == 0) ? (0.2f * (powf((float)i, 0.4f)) + 0.1f) : (powf((float)i, 0.3f) + 0.1f);
     }
 
     float *h_gamma = new float[hidden_units];
     for (int i = 0; i < hidden_units; ++i)
     {
-        h_gamma[i] = (i % 2 == 0) ? (i - 10) : (powf((float)i, 0.4f) + 10.0f);
+        h_gamma[i] = (i % 2 == 0) ? (0.2f * (powf((float)i, 0.4f)) + 0.1f) : (powf((float)i, 0.4f) + 0.1f);
     }
 
     int32_t *d_attn;
@@ -717,10 +717,11 @@ void testDequantizedResidualResNormQuantized()
     float *d_norm_scale;
     int8_t *d_norm_out;
     float *d_gamma;
+    float *d_ffn_tensor;
 
     int mem_size = sizeof(int32_t) * num_elements + sizeof(float) * num_elements + 
         sizeof(float) * rows + sizeof(float) * hidden_units + sizeof(float) * rows + sizeof(float) * hidden_units +
-        sizeof(int8_t) * num_elements;
+        sizeof(int8_t) * num_elements + sizeof(float) * num_elements;
     
     device_malloc(&d_attn, mem_size);
     d_from_tensor = (float *)(d_attn + num_elements);
@@ -729,6 +730,7 @@ void testDequantizedResidualResNormQuantized()
     d_norm_scale = (float *)(d_weight_scale + hidden_units);
     d_gamma = (float *)(d_norm_scale + rows);
     d_norm_out = (int8_t *)(d_gamma + hidden_units);
+    d_ffn_tensor = (float *)(d_norm_out + num_elements);
 
     CHECK_CUDA_ERROR(cudaMemcpy(d_attn, h_attn, sizeof(int32_t) * num_elements, cudaMemcpyHostToDevice));
     CHECK_CUDA_ERROR(cudaMemcpy(d_from_tensor, h_from_tensor, sizeof(float) * num_elements, cudaMemcpyHostToDevice));
@@ -736,11 +738,12 @@ void testDequantizedResidualResNormQuantized()
     CHECK_CUDA_ERROR(cudaMemcpy(d_weight_scale, h_weight_scale, sizeof(float) * hidden_units, cudaMemcpyHostToDevice));
     CHECK_CUDA_ERROR(cudaMemcpy(d_gamma, h_gamma, sizeof(float) * hidden_units, cudaMemcpyHostToDevice));
     
-    tinycudallama::launchDequantizedResidualResNormQuantized<float>(d_norm_out, d_from_tensor, d_attn, d_attn_scale, 
+    tinycudallama::launchDequantizedResidualResNormQuantized<float>(d_norm_out, d_ffn_tensor, d_from_tensor, d_attn, d_attn_scale, 
         d_weight_scale, d_gamma, d_norm_scale, 1e-5f, rows, hidden_units);
 
     float *h_norm_scale = new float[rows];
     int8_t *h_norm_out = new int8_t[num_elements];
+    float *h_ffn_tensor = new float[num_elements];
 
     CHECK_CUDA_ERROR(cudaMemcpy(h_norm_scale, d_norm_scale, sizeof(float) * rows, cudaMemcpyDeviceToHost));
     printVecInVec(h_norm_scale, 1, rows, 1, rows, "h_norm_scale");
@@ -748,15 +751,21 @@ void testDequantizedResidualResNormQuantized()
     CHECK_CUDA_ERROR(cudaMemcpy(h_norm_out, d_norm_out, sizeof(int8_t) * num_elements, cudaMemcpyDeviceToHost));
     printVecInVec(h_norm_out, rows, hidden_units, 10, 10, "h_norm_out");
 
+    CHECK_CUDA_ERROR(cudaMemcpy(h_ffn_tensor, d_ffn_tensor, sizeof(float) * num_elements, cudaMemcpyDeviceToHost));
+    printVecInVec(h_ffn_tensor, rows, hidden_units, 10, 10, "h_ffn_tensor");
+
+
     half *d_from_tensor_half;
     half *d_gamma_half;
+    half *d_ffn_tensor_half;
     device_malloc(&d_from_tensor_half, sizeof(half) * num_elements);
     device_malloc(&d_gamma_half, sizeof(half) * hidden_units);
+    device_malloc(&d_ffn_tensor_half, sizeof(half) * num_elements);
 
     convertMatfloat2half<<<rows, 128>>>(d_from_tensor, d_from_tensor_half, num_elements);
     convertMatfloat2half<<<1, 128>>>(d_gamma, d_gamma_half, hidden_units);
 
-    tinycudallama::launchDequantizedResidualResNormQuantized(d_norm_out, d_from_tensor_half, d_attn, d_attn_scale, 
+    tinycudallama::launchDequantizedResidualResNormQuantized(d_norm_out, d_ffn_tensor_half, d_from_tensor_half, d_attn, d_attn_scale, 
         d_weight_scale, d_gamma_half, d_norm_scale, 1e-5f, rows, hidden_units);
 
     CHECK_CUDA_ERROR(cudaMemcpy(h_norm_scale, d_norm_scale, sizeof(float) * rows, cudaMemcpyDeviceToHost));
@@ -765,6 +774,10 @@ void testDequantizedResidualResNormQuantized()
     CHECK_CUDA_ERROR(cudaMemcpy(h_norm_out, d_norm_out, sizeof(int8_t) * num_elements, cudaMemcpyDeviceToHost));
     printVecInVec(h_norm_out, rows, hidden_units, 10, 10, "h_norm_out_half");
 
+    half *h_ffn_tensor_half = new half[num_elements];
+    CHECK_CUDA_ERROR(cudaMemcpy(h_ffn_tensor_half, d_ffn_tensor_half, sizeof(half) * num_elements, cudaMemcpyDeviceToHost));
+    printVecInVec(h_ffn_tensor_half, rows, hidden_units, 10, 10, "h_ffn_tensor_half");
+
     delete[] h_attn;
     delete[] h_from_tensor;
     delete[] h_attn_scale;
@@ -772,10 +785,13 @@ void testDequantizedResidualResNormQuantized()
     delete[] h_gamma;
     delete[] h_norm_out;
     delete[] h_norm_scale;
+    delete[] h_ffn_tensor;
+    delete[] h_ffn_tensor_half;
 
     CHECK_CUDA_ERROR(cudaFree(d_attn));
     CHECK_CUDA_ERROR(cudaFree(d_from_tensor_half));
     CHECK_CUDA_ERROR(cudaFree(d_gamma_half));
+    CHECK_CUDA_ERROR(cudaFree(d_ffn_tensor_half));
 }
 
 void testResNormQuantized()
@@ -970,11 +986,11 @@ int main()
 
     // testDequantizedAttnQuantizedTranspose();
 
-    // testDequantizedResidualResNormQuantized();
+    testDequantizedResidualResNormQuantized();
 
     // testResNormQuantized();
 
-    testDequantizedSiluMultifyQuantized();
+    // testDequantizedSiluMultifyQuantized();
 
     return 0;
 }
