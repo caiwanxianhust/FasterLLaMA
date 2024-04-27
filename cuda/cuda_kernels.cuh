@@ -1159,7 +1159,61 @@ void launchDequantizedResidualResNormQuantized(int8_t * norm_out, const DataType
         norm_scale, eps, hidden_units);
 }
 
+inline __device__ float silu(float x) 
+{
+    return x / (1.0f + __expf(-x));
+}
 
+/** 反量化、silu、element-wise-multify、量化
+ * grid(nrows) block(128)
+ * out_buf: [nrows, hidden_units]
+ * w1_ret w3_ret: [nrows, hidden_units]
+ * norm_scale: [nrows, ]
+ * w1_weight_scale w3_weight_scale: [hidden_units, ]
+ * out_scale: [nrows, ]
+*/
+__global__ void dequantizedSiluMultifyQuantizedKernel(int8_t * __restrict__ out_buf, const int32_t * __restrict__ w1_ret, const float * __restrict__ norm_scale, 
+    const float * __restrict__ w1_weight_scale, const int32_t * __restrict__ w3_ret, const float * __restrict__ w3_weight_scale, 
+    float * __restrict__ out_scale, const int hidden_units)
+{
+    const int row_id = blockIdx.x;
+    const float norm_scale_val = __ldg(norm_scale + row_id);
+    const int offset = row_id * hidden_units;
+    extern __shared__ float s_buf[];
+    float val;
+    float absmax = -1e9f;
+    for (int tid = threadIdx.x; tid < hidden_units; tid += blockDim.x) {
+        val = static_cast<float>(w1_ret[offset + tid]) * norm_scale_val * __ldg(w1_weight_scale + tid);
+        val = silu(val);
+        val *= static_cast<float>(w3_ret[offset + tid]) * norm_scale_val * __ldg(w3_weight_scale + tid);
+        s_buf[tid] = val;
+        absmax = max(absmax, fabsf(val));
+    }
+    __syncthreads();
+
+    absmax = blockAllReduceMax<float>(absmax);
+    if (threadIdx.x == 0) {  out_scale[row_id] = absmax / 127.0f;  }
+
+    float scale_val = 127.0f / absmax;
+    char4 out_val;
+    char4 *out_ptr = (char4 *)out_buf;
+    for (int tid = (threadIdx.x << 2); tid < hidden_units; tid += (blockDim.x << 2)) {
+        out_val.x = float_to_int8_rn(s_buf[tid] * scale_val);
+        out_val.y = float_to_int8_rn(s_buf[tid + 1] * scale_val);
+        out_val.z = float_to_int8_rn(s_buf[tid + 2] * scale_val);
+        out_val.w = float_to_int8_rn(s_buf[tid + 3] * scale_val);
+        out_ptr[(offset + tid >> 2)] = out_val;
+    }
+}
+
+void launchDequantizedSiluMultifyQuantized(int8_t * out_buf, const int32_t * w1_ret, const float * norm_scale, const float * w1_weight_scale, 
+    const int32_t * w3_ret, const float * w3_weight_scale, float * out_scale, const int nrows, const int hidden_units, cudaStream_t stream = 0)
+{
+    assert(hidden_units % 4 == 0);
+    int mem_size = sizeof(float) * hidden_units;
+    dequantizedSiluMultifyQuantizedKernel<<<nrows, 128, mem_size, stream>>>(out_buf, w1_ret, norm_scale, w1_weight_scale, 
+        w3_ret, w3_weight_scale, out_scale, hidden_units);
+}
 
 
 } // tinycudallama

@@ -859,6 +859,93 @@ void testResNormQuantized()
 
 }
 
+void testDequantizedSiluMultifyQuantized()
+{
+    const int rows = 16;
+    const int hidden_units = 11008;
+    const int num_elements = rows * hidden_units;
+
+    int32_t *h_w1_ret = new int32_t[num_elements];
+    for (int i = 0; i < num_elements; ++i)
+    {
+        h_w1_ret[i] = (i % 2 == 0) ? (i%70) : (-2 * (i%60) + 1);
+    }
+    printVecInVec(h_w1_ret, rows, hidden_units, 2, 10, "h_w1_ret");
+
+    int32_t *h_w3_ret = new int32_t[num_elements];
+    for (int i = 0; i < num_elements; ++i)
+    {
+        h_w3_ret[i] = (i % 2 == 0) ? (i%80) : (-3.5 * (i%70) + 1);
+    }
+    printVecInVec(h_w3_ret, rows, hidden_units, 2, 10, "h_w3_ret");
+
+    float *h_norm_scale = new float[rows];
+    for (int i = 0; i < rows; ++i)
+    {
+        h_norm_scale[i] = (i % 2 == 0) ? (0.2f * powf((float)i, 0.1f) + 0.1f) : (powf((float)i, 0.5f) + 0.1f);
+    }
+    printVecInVec(h_norm_scale, 1, rows, 1, rows, "h_norm_scale");
+
+    float *h_w1_weight_scale = new float[hidden_units];
+    for (int i = 0; i < hidden_units; ++i)
+    {
+        h_w1_weight_scale[i] = (i % 2 == 0) ? (0.3f * powf((float)i, 0.1f) + 0.1f) : (powf((float)i, 0.3f) + 0.1f);
+    }
+    printVecInVec(h_w1_weight_scale, 1, hidden_units, 1, 10, "h_w1_weight_scale");
+
+    float *h_w3_weight_scale = new float[hidden_units];
+    for (int i = 0; i < hidden_units; ++i)
+    {
+        h_w3_weight_scale[i] = (i % 2 == 0) ? (0.4f * powf((float)i, 0.1f) + 0.1f) : (powf((float)i, 0.4f) + 0.1f);
+    }
+    printVecInVec(h_w3_weight_scale, 1, hidden_units, 1, 10, "h_w3_weight_scale");
+
+    int32_t *d_w1_ret;
+    int32_t *d_w3_ret;
+    float *d_norm_scale;
+    float *d_w1_weight_scale;
+    float *d_w3_weight_scale;
+    float *d_out_scale;
+    int8_t *d_out;
+
+    int mem_size = sizeof(int32_t) * num_elements * 2 + sizeof(float) * (rows + hidden_units * 2 + rows) + sizeof(int8_t) * num_elements;
+    device_malloc(&d_w1_ret, mem_size);
+    d_w3_ret = (int32_t *)(d_w1_ret + num_elements);
+    d_norm_scale = (float *)(d_w3_ret + num_elements);
+    d_w1_weight_scale = (float *)(d_norm_scale + rows);
+    d_w3_weight_scale = (float *)(d_w1_weight_scale + hidden_units);
+    d_out_scale = (float *)(d_w3_weight_scale + hidden_units);
+    d_out = (int8_t *)(d_out_scale + rows);
+
+    CHECK_CUDA_ERROR(cudaMemcpy(d_w1_ret, h_w1_ret, sizeof(int32_t) * num_elements, cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(d_w3_ret, h_w3_ret, sizeof(int32_t) * num_elements, cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(d_norm_scale, h_norm_scale, sizeof(float) * rows, cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(d_w1_weight_scale, h_w1_weight_scale, sizeof(float) * hidden_units, cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(d_w3_weight_scale, h_w3_weight_scale, sizeof(float) * hidden_units, cudaMemcpyHostToDevice));
+
+    tinycudallama::launchDequantizedSiluMultifyQuantized(d_out, d_w1_ret, d_norm_scale, d_w1_weight_scale, d_w3_ret, d_w3_weight_scale, 
+        d_out_scale, rows, hidden_units);
+
+    float *h_out_scale = new float[rows];
+    int8_t *h_out = new int8_t[num_elements];
+
+    CHECK_CUDA_ERROR(cudaMemcpy(h_out_scale, d_out_scale, sizeof(float) * rows, cudaMemcpyDeviceToHost));
+    printVecInVec(h_out_scale, 1, rows, 1, rows, "h_out_scale");
+
+    CHECK_CUDA_ERROR(cudaMemcpy(h_out, d_out, sizeof(int8_t) * num_elements, cudaMemcpyDeviceToHost));
+    printVecInVec(h_out, rows, hidden_units, 10, 10, "h_out");
+
+    delete[] h_w1_ret;
+    delete[] h_w3_ret;
+    delete[] h_norm_scale;
+    delete[] h_w1_weight_scale;
+    delete[] h_w3_weight_scale;
+    delete[] h_out_scale;
+    delete[] h_out;
+
+    CHECK_CUDA_ERROR(cudaFree(d_w1_ret));
+}
+
 
 
 int main()
@@ -883,9 +970,11 @@ int main()
 
     // testDequantizedAttnQuantizedTranspose();
 
-    testDequantizedResidualResNormQuantized();
+    // testDequantizedResidualResNormQuantized();
 
     // testResNormQuantized();
+
+    testDequantizedSiluMultifyQuantized();
 
     return 0;
 }
