@@ -1219,5 +1219,59 @@ void launchDequantizedSiluMultifyQuantized(int8_t * out_buf, const int32_t * w1_
         w3_ret, w3_weight_scale, out_scale, hidden_units);
 }
 
+/**反量化、残差结构
+ * grid(seq_len * batch_size) block(128)
+ * out: [batch_size, seq_len, hidden_units]
+ * ffn_tensor: [batch_size, seq_len, hidden_units]
+ * from_temsor: [batch_size, seq_len, hidden_units]
+ * inp: [batch_size, seq_len, hidden_units]
+ * inp_scale: [batch_size, seq_len]
+ * weight_scale: [hidden_units]
+*/
+template <typename DataType>
+__global__ void dequantizedResidualKernel(DataType * __restrict__ out, const DataType * __restrict__ from_temsor, 
+    const int32_t * __restrict__ inp, const float * __restrict__ inp_scale, const float * __restrict__ weight_scale, 
+    const int hidden_units)
+{
+    const int row_id = blockIdx.x;
+    const int offset = row_id * hidden_units;
+    const float inp_scale_val = __ldg(inp_scale + row_id);
+    float val;
+
+    for (int tid = threadIdx.x; tid < hidden_units; tid += blockDim.x) {
+        val = static_cast<float>(inp[offset + tid]) * inp_scale_val * __ldg(weight_scale + tid) + static_cast<float>(from_temsor[offset + tid]);
+        out[offset + tid] = static_cast<DataType>(val);
+    }
+}
+
+template <>
+__global__ void dequantizedResidualKernel(half * __restrict__ out, const half * __restrict__ from_temsor, 
+    const int32_t * __restrict__ inp, const float * __restrict__ inp_scale, const float * __restrict__ weight_scale, 
+    const int hidden_units)
+{
+    const int row_id = blockIdx.x;
+    const int offset = row_id * hidden_units;
+    const float inp_scale_val = __ldg(inp_scale + row_id);
+    half2 tmp;
+    half2 *from_temsor_ptr = (half2 *)(from_temsor + offset);
+    half2 *out_ptr = (half2 *)(out + offset);
+
+    for (int tid = threadIdx.x; tid < (hidden_units >> 1); tid += blockDim.x) {
+        tmp.x = __float2half(static_cast<float>(inp[offset + 2 * tid]) * inp_scale_val * __ldg(weight_scale + 2 * tid));
+        tmp.y = __float2half(static_cast<float>(inp[offset + 2 * tid + 1]) * inp_scale_val * __ldg(weight_scale + 2 * tid + 1));
+        out_ptr[tid] = __hadd2(from_temsor_ptr[tid], tmp);
+    }
+}
+
+template <typename DataType>
+void launchDequantizedResidual(DataType * __restrict__ out, const DataType * __restrict__ from_temsor, const int32_t * __restrict__ inp, 
+    const float * __restrict__ inp_scale, const float * __restrict__ weight_scale, const int nrows, 
+    const int hidden_units, cudaStream_t stream = 0)
+{
+    assert(hidden_units % 2 == 0);
+    dequantizedResidualKernel<<<nrows, 128, 0, stream>>>(out, from_temsor, inp, inp_scale, weight_scale, hidden_units);
+}
+
+
 
 } // tinycudallama

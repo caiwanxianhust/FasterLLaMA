@@ -962,6 +962,90 @@ void testDequantizedSiluMultifyQuantized()
     CHECK_CUDA_ERROR(cudaFree(d_w1_ret));
 }
 
+void testDequantizedResidual()
+{
+    const int rows = 16;
+    const int hidden_units = 4096;
+    const int num_elements = rows * hidden_units;
+
+    int32_t *h_inp = new int32_t[num_elements];
+    for (int i = 0; i < num_elements; ++i)
+    {
+        h_inp[i] = (i % 2 == 0) ? (i%70) : (-2 * (i%60) + 1);
+    }
+    printVecInVec(h_inp, rows, hidden_units, 2, 10, "h_inp");
+
+    float *h_from_tensor = new float[num_elements];
+    for (int i = 0; i < num_elements; ++i)
+    {
+        h_from_tensor[i] = (i % 2 == 0) ? (i%80) : (-3.5 * (i%70) + 1);
+    }
+    printVecInVec(h_from_tensor, rows, hidden_units, 2, 10, "h_from_tensor");
+
+    float *h_inp_scale = new float[rows];
+    for (int i = 0; i < rows; ++i)
+    {
+        h_inp_scale[i] = (i % 2 == 0) ? (0.2f * (powf((float)i, 0.4f)) + 0.1f) : (powf((float)i, 0.5f) + 0.1f);
+    }
+
+    float *h_weight_scale = new float[hidden_units];
+    for (int i = 0; i < hidden_units; ++i)
+    {
+        h_weight_scale[i] = (i % 2 == 0) ? (0.2f * (powf((float)i, 0.4f)) + 0.1f) : (powf((float)i, 0.3f) + 0.1f);
+    }
+
+    int32_t *d_inp;
+    float *d_from_tensor;
+    float *d_inp_scale;
+    float *d_weight_scale;
+    float *d_out;
+
+    int mem_size = sizeof(int32_t) * num_elements + sizeof(float) * num_elements + 
+        sizeof(float) * rows + sizeof(float) * hidden_units + sizeof(float) * num_elements;
+    
+    device_malloc(&d_inp, mem_size);
+    d_from_tensor = (float *)(d_inp + num_elements);
+    d_inp_scale = (float *)(d_from_tensor + num_elements);
+    d_weight_scale = (float *)(d_inp_scale + rows);
+    d_out = (float *)(d_weight_scale + hidden_units);
+    
+    CHECK_CUDA_ERROR(cudaMemcpy(d_inp, h_inp, sizeof(int32_t) * num_elements, cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(d_from_tensor, h_from_tensor, sizeof(float) * num_elements, cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(d_inp_scale, h_inp_scale, sizeof(float) * rows, cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(d_weight_scale, h_weight_scale, sizeof(float) * hidden_units, cudaMemcpyHostToDevice));
+    
+    tinycudallama::launchDequantizedResidual<float>(d_out, d_from_tensor, d_inp, d_inp_scale, d_weight_scale, rows, hidden_units);
+
+    float *h_out = new float[num_elements];
+
+    CHECK_CUDA_ERROR(cudaMemcpy(h_out, d_out, sizeof(float) * num_elements, cudaMemcpyDeviceToHost));
+    printVecInVec(h_out, rows, hidden_units, 10, 10, "h_out");
+
+    half *d_from_tensor_half;
+    half *d_out_half;
+    device_malloc(&d_from_tensor_half, sizeof(half) * num_elements * 2);
+    d_out_half = d_from_tensor_half + num_elements;
+
+    convertMatfloat2half<<<rows, 128>>>(d_from_tensor, d_from_tensor_half, num_elements);
+
+    tinycudallama::launchDequantizedResidual(d_out_half, d_from_tensor_half, d_inp, d_inp_scale, d_weight_scale, rows, hidden_units);
+
+    half *h_out_half = new half[num_elements];
+
+    CHECK_CUDA_ERROR(cudaMemcpy(h_out_half, d_out_half, sizeof(half) * num_elements, cudaMemcpyDeviceToHost));
+    printVecInVec(h_out_half, rows, hidden_units, 10, 10, "h_out_half");
+
+    delete[] h_inp;
+    delete[] h_from_tensor;
+    delete[] h_inp_scale;
+    delete[] h_weight_scale;
+    delete[] h_out;
+    delete[] h_out_half;
+
+    CHECK_CUDA_ERROR(cudaFree(d_inp));
+    CHECK_CUDA_ERROR(cudaFree(d_from_tensor_half));
+}
+
 
 
 int main()
@@ -986,11 +1070,13 @@ int main()
 
     // testDequantizedAttnQuantizedTranspose();
 
-    testDequantizedResidualResNormQuantized();
+    // testDequantizedResidualResNormQuantized();
 
     // testResNormQuantized();
 
     // testDequantizedSiluMultifyQuantized();
+
+    testDequantizedResidual();
 
     return 0;
 }
