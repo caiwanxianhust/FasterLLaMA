@@ -2,6 +2,40 @@
 #include <stdio.h>
 #include <cublas_v2.h>
 
+namespace tinycudallama 
+{
+
+enum class OperationType{FP32, FP16};
+enum class AllocatorType{CUDA, TF, TH};
+
+template<typename T>
+struct ResNormWeight{
+    const T* gamma = nullptr;
+    const float eps = 1e-5f;
+};
+
+template<typename T>
+struct DenseWeight{
+    const T* kernel = nullptr;
+    const T* bias = nullptr;
+    const float* weight_scale = nullptr;
+};
+
+template<typename T>
+struct AttentionWeight{
+    DenseWeight<T> query_weight;
+    DenseWeight<T> key_weight;
+    DenseWeight<T> value_weight;
+    DenseWeight<T> attention_output_weight;
+};
+
+template<typename T>
+struct FFNWeight{
+    DenseWeight<T> w1_weight;
+    DenseWeight<T> w2_weight;
+    DenseWeight<T> w3_weight;
+};
+
 static const char *_cudaGetErrorEnum(cublasStatus_t error)
 {
     switch (error)
@@ -70,3 +104,9 @@ static const char *_cudaGetErrorEnum(cublasStatus_t error)
             exit(1);                                         \
         }                                                    \
     } while (0)
+
+}
+
+
+
+

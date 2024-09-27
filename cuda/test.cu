@@ -1046,7 +1046,61 @@ void testDequantizedResidual()
     CHECK_CUDA_ERROR(cudaFree(d_from_tensor_half));
 }
 
+void testCopyKVFromCache()
+{
+    const int batch_size = 4;
+    const int max_seq_len = 2048;
+    const int head_num = 32;
+    const int size_per_head = 128;
+    const int seq_len = 5;
+    const int hidden_units = head_num * size_per_head;
+    const int num_elements = batch_size * max_seq_len * hidden_units;
 
+    int8_t *h_k_cache = new int8_t[num_elements];
+    for (int i = 0; i < num_elements; ++i)
+    {
+        h_k_cache[i] = (i % 2 == 0) ? (i%70) : (-2 * (i%60) + 1);
+    }
+    printVecInVec(h_k_cache, batch_size * head_num * max_seq_len, size_per_head, 10, 10, "h_k_cache");
+
+    int8_t *h_v_cache = new int8_t[num_elements];
+    for (int i = 0; i < num_elements; ++i)
+    {
+        h_v_cache[i] = (i % 2 == 0) ? (i%60) : (-2 * (i%50) + 1);
+    }
+    printVecInVec(h_v_cache, batch_size * head_num * max_seq_len, size_per_head, 10, 10, "h_v_cache");
+
+    int8_t *d_k_cache;
+    int8_t *d_v_cache;
+    int8_t *d_k_buf;
+    int8_t *d_v_buf;
+    device_malloc(&d_k_cache, sizeof(int8_t) * num_elements * 4);
+    d_v_cache = d_k_cache + num_elements;
+    d_k_buf = d_v_cache + num_elements;
+    d_v_buf = d_k_buf + num_elements;
+
+    CHECK_CUDA_ERROR(cudaMemcpy(d_k_cache, h_k_cache, sizeof(int8_t) * num_elements, cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(d_v_cache, h_v_cache, sizeof(int8_t) * num_elements, cudaMemcpyHostToDevice));
+
+    tinycudallama::launchCopyKVFromCacheKernel(d_k_buf, d_v_buf, d_k_cache, d_v_cache, batch_size * head_num, max_seq_len, seq_len, size_per_head);
+
+    int8_t *h_k_buf = new int8_t[num_elements]{0};
+    int8_t *h_v_buf = new int8_t[num_elements]{0};
+
+    CHECK_CUDA_ERROR(cudaMemcpy(h_k_buf, d_k_buf, sizeof(int8_t) * batch_size * head_num * seq_len * size_per_head, cudaMemcpyDeviceToHost));
+    printVecInVec(h_k_buf, batch_size * head_num * seq_len, size_per_head, 10, 10, "h_k_buf");
+
+    CHECK_CUDA_ERROR(cudaMemcpy(h_v_buf, d_v_buf, sizeof(int8_t) * batch_size * head_num * seq_len * size_per_head, cudaMemcpyDeviceToHost));
+    printVecInVec(h_v_buf, batch_size * head_num * seq_len, size_per_head, 10, 10, "h_v_buf");
+
+
+    delete[] h_k_cache;
+    delete[] h_k_buf;
+    delete[] h_v_cache;
+    delete[] h_v_buf;
+
+    CHECK_CUDA_ERROR(cudaFree(d_k_cache));
+}
 
 int main()
 {
@@ -1076,7 +1130,9 @@ int main()
 
     // testDequantizedSiluMultifyQuantized();
 
-    testDequantizedResidual();
+    // testDequantizedResidual();
+
+    testCopyKVFromCache();
 
     return 0;
 }
