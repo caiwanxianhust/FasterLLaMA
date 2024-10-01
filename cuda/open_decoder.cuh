@@ -88,33 +88,21 @@ namespace tinycudallama
             cache_size = batch_size, head_num, total_len_, size_per_head
          */
         float *freq_cis_;            // [max_prompt_len_, size_per_head]
-        int8_t *attn_norm_out_buf_;  // buf_size, [batch_size * seq_len, head_num * size_per_head]
-        float *attn_norm_scale_buf_; // size: batch_size * max_prompt_len_,  [batch_size, seq_len]
+        int8_t *from_tensor_int8_buf_;  // [batch_size * max_prompt_len_, head_num * size_per_head]
+        // int8_t *attn_norm_out_buf_;  // buf_size, [batch_size * seq_len, head_num * size_per_head]
+        // float *attn_norm_scale_buf_; // size: batch_size * max_prompt_len_,  [batch_size, seq_len]
+        float *from_tensor_scale_buf_;  // [batch_size, max_prompt_len_]
         int32_t *query_buf_;         // buf_size, [batch_size * seq_len, head_num * size_per_head]
         int32_t *key_buf_;           // buf_size, [batch_size * seq_len, head_num * size_per_head]
         int32_t *value_buf_;         // buf_size, [batch_size * seq_len, head_num * size_per_head]
         float *query_out_buf_;       // buf_size, [batch_size, head_num, seq_len, size_per_head]
         float *key_out_buf_;         // buf_size, [batch_size, head_num, start_pos+seq_len, size_per_head]
         float *value_out_fp_buf_;    // buf_size, [batch_size, head_num, seq_len, size_per_head]
-        int8_t *value_out_buf;       // buf_size, [batch_size, head_num, start_pos+seq_len, size_per_head]
-        float *query_scale_buf_;     // [batch_size, head_num, max_prompt_len_]
-        // float *key_scale_buf_;            // [batch_size, head_num, max_prompt_len_]
-        float *value_scale_buf;     // [batch_size, head_num, total_len_, size_per_head]
         float *qk_buf_;             // [batch_size * head_num, seq_len, total_len_]
         float *qkv_buf_;            // [batch_size * head_num, seq_len, size_per_head]
-        int8_t *qkv_trans_buf_;     // [batch_size, seq_len, head_num * size_per_head]
-        float *attn_out_scale_buf_; // [batch_size, seq_len]
-        int32_t *attn_out_buf_;     // [batch_size, seq_len, head_num * size_per_head]
         DataType_ *ffn_tensor_buf_; //[batch_size, seq_len, head_num * size_per_head]
-        int32_t *w1_buf_;
-        int32_t *w3_buf;
-        int32_t *w2_buf_;
-        int32_t *ffn_inter_buf_;
         float *ffn_inter_scale; // [batch_size, seq_len]
 
-        // DataType_ *norm_from_tensor_buf_, *query_buf_, *context_buf_, *masked_output_buf_;
-        // DataType_ *norm_masked_output_buf_, *cross_output_buf_, *norm_cross_output_buf_, *ffn_inner_buf_;
-        // DataType_ *key_buf_, *value_buf_;
 
     public:
         OpenDecoder(int batch_size, int max_seq_len,
@@ -132,7 +120,7 @@ namespace tinycudallama
             }
         }
 
-        void initialize(DecoderInitParam<DataType_> param, DataType_ *buf)
+        void initialize(DecoderInitParam<DataType_> param, char *buf)
         {
             param_ = param;
             // int buf_size = batch_size_ * hidden_units_;
@@ -153,10 +141,8 @@ namespace tinycudallama
         }
         /**
          * key_cache_ value_cache_: [batch_size, head_num, total_len_, size_per_head]
-         * key_scale_cache_: [batch_size, head_num, total_len_]
          */
-        void forward(const DataType_ *from_tensor, float *key_cache_, float *value_cache_,
-                     float *key_scale_cache_, float *value_scale_cache_, int ffn_hidden_units,
+        void forward(const DataType_ *from_tensor, float *key_cache_, float *value_cache_, int ffn_hidden_units,
                      DataType_ *decoder_output, const int start_pos, const int seq_len)
         {
             const AlphaBetaType_ alpha = 1;
@@ -164,8 +150,8 @@ namespace tinycudallama
             try
             {
                 /* masked multi-head attention */
-                /* ResNorm-Quantized(from_tensor) -> attn_norm_out_buf_ and attn_norm_scale_buf_ */
-                launchResNormQuantizedKernel<DataType_>(attn_norm_out_buf_, from_tensor, param_.attn_resnorm.gamma, attn_norm_scale_buf_,
+                /* ResNorm-Quantized(from_tensor) -> from_tensor_int8_buf_ and from_tensor_scale_buf_ */
+                launchResNormQuantizedKernel<DataType_>(from_tensor_int8_buf_, from_tensor, param_.attn_resnorm.gamma, from_tensor_scale_buf_,
                                                         param_.attn_resnorm.eps, batch_size_ * seq_len, hidden_units_, param_.stream);
 
 #ifndef NDEBUG
@@ -173,7 +159,7 @@ namespace tinycudallama
                 check_cuda_error(cudaGetLastError());
 #endif
 
-                /* Q\K\V gemm(attn_norm_out_buf_) -> query_buf_、key_buf_、value_buf_ */
+                /* Q\K\V gemm(from_tensor_int8_buf_) -> query_buf_、key_buf_、value_buf_ */
                 int m = batch_size_ * seq_len;
                 int n = hidden_units_;
                 int k = hidden_units_;
@@ -183,7 +169,7 @@ namespace tinycudallama
                                                  n, m, k,
                                                  &alpha,
                                                  param_.attention.query_weight.kernel, AType_, n,
-                                                 attn_norm_out_buf_, BType_, k,
+                                                 from_tensor_int8_buf_, BType_, k,
                                                  &beta,
                                                  query_buf_, CType_, n,
                                                  computeType_,
@@ -194,7 +180,7 @@ namespace tinycudallama
                                                  n, m, k,
                                                  &alpha,
                                                  param_.attention.key_weight.kernel, AType_, n,
-                                                 attn_norm_out_buf_, BType_, k,
+                                                 from_tensor_int8_buf_, BType_, k,
                                                  &beta,
                                                  key_buf_, CType_, n,
                                                  computeType_,
@@ -205,7 +191,7 @@ namespace tinycudallama
                                                  n, m, k,
                                                  &alpha,
                                                  param_.attention.value_weight.kernel, AType_, n,
-                                                 attn_norm_out_buf_, BType_, k,
+                                                 from_tensor_int8_buf_, BType_, k,
                                                  &beta,
                                                  value_buf_, CType_, n,
                                                  computeType_,
@@ -213,11 +199,11 @@ namespace tinycudallama
 
                 /**
                  * Q\K Quantized-rope-Quantized-Transpose
-                 * query_buf_, key_buf_ -> query_out_buf_, key_out_buf_, query_scale_buf_, key_scale_cache_
+                 * query_buf_, key_buf_ -> query_out_buf_, key_out_buf_
                  */
-                launchQKRoteEmbeddingTranspose(query_out_buf_, key_out_buf_, query_buf_, key_buf_, attn_norm_scale_buf_, attn_norm_scale_buf_,
-                                               param_.attention.query_weight.weight_scale, param_.attention.key_weight.weight_scale, query_scale_buf_, key_scale_cache_, freq_cis_, batch_size_, seq_len,
-                                               start_pos, total_len_, head_num_, size_per_head_, param_.stream);
+                launchQKRoteEmbeddingTranspose(query_out_buf_, key_out_buf_, query_buf_, key_buf_, from_tensor_scale_buf_, from_tensor_scale_buf_,
+                                               param_.attention.query_weight.weight_scale, param_.attention.key_weight.weight_scale, 
+                                               freq_cis_, batch_size_, seq_len, start_pos, total_len_, head_num_, size_per_head_, param_.stream);
 
 #ifndef NDEBUG
                 cudaDeviceSynchronize();
@@ -228,7 +214,7 @@ namespace tinycudallama
                  * Dequantized V Transpose
                  * value_buf_ -> value_out_fp_buf_
                  */
-                launchDequantizedVTransposeKernel(value_out_fp_buf_, value_buf_, attn_norm_scale_buf_, param_.attention.value_weight.weight_scale,
+                launchDequantizedVTransposeKernel(value_out_fp_buf_, value_buf_, from_tensor_scale_buf_, param_.attention.value_weight.weight_scale,
                                                   batch_size_, seq_len, head_num_, size_per_head_, param_.stream);
 
 #ifndef NDEBUG
@@ -316,7 +302,7 @@ namespace tinycudallama
                  * quantized qkv to int8 and transpose from [batch_size, head_num, seq_len, size_per_head]
                  * to [batch_size, seq_len, hidden_units]
                  */
-                launchAttnQuantizedTransposeKernel(qkv_trans_buf_, qkv_buf_, attn_out_scale_buf_, batch_size_, head_num_, seq_len,
+                launchAttnQuantizedTransposeKernel(from_tensor_int8_buf_, qkv_buf_, from_tensor_scale_buf_, batch_size_, head_num_, seq_len,
                                                    size_per_head_, param_.stream);
 
 #ifndef NDEBUG
@@ -325,26 +311,26 @@ namespace tinycudallama
 #endif
 
                 /**
-                 * project gemm
+                 * project gemm, Reuse the query_buf_ as attn_out_buf_
                  */
                 CHECK_CUBLAS_STATUS(cublasGemmEx(param_.cublas_handle,
                                                  CUBLAS_OP_N, CUBLAS_OP_N,
                                                  n, m, k,
                                                  &alpha,
                                                  param_.attention.attention_output_weight.kernel, AType_, n,
-                                                 qkv_trans_buf_, BType_, k,
+                                                 from_tensor_int8_buf_, BType_, k,
                                                  &beta,
-                                                 attn_out_buf_, CType_, n,
+                                                 query_buf_, CType_, n,
                                                  computeType_,
                                                  static_cast<cublasGemmAlgo_t>(cublasAlgo_[0])));
 
                 /**
-                 * attn_out_buf_ -> dequantized & add Residual -> ffn_tensor_buf_, DataType_, [batch_size, seq_len, hidden_units]
-                 * ffn_tensor_buf_ -> resNorm & quantized -> attn_norm_out_buf_, int8, [batch_size, seq_len, hidden_units]
+                 * query_buf_ -> dequantized & add Residual -> ffn_tensor_buf_, DataType_, [batch_size, seq_len, hidden_units]
+                 * ffn_tensor_buf_ -> resNorm & quantized -> from_tensor_int8_buf_, int8, [batch_size, seq_len, hidden_units]
                  */
-                launchDequantizedResidualResNormQuantized<DataType_>(attn_norm_out_buf_, ffn_tensor_buf_, from_tensor, attn_out_buf_,
-                                                                     attn_out_scale_buf_, param_.attention.attention_output_weight.weight_scale,
-                                                                     param_.ffn_resnorm.gamma, attn_norm_scale_buf_, param_.ffn_resnorm.eps,
+                launchDequantizedResidualResNormQuantized<DataType_>(from_tensor_int8_buf_, ffn_tensor_buf_, from_tensor, query_buf_,
+                                                                     from_tensor_scale_buf_, param_.attention.attention_output_weight.weight_scale,
+                                                                     param_.ffn_resnorm.gamma, from_tensor_scale_buf_, param_.ffn_resnorm.eps,
                                                                      batch_size_ * seq_len, hidden_units_, param_.stream);
 
 #ifndef NDEBUG
@@ -354,41 +340,41 @@ namespace tinycudallama
 
                 n = ffn_hidden_units;
                 /**
-                 * w1 gemm
+                 * w1 gemm, Reuse the query_buf_ as w1_buf_
                  */
                 CHECK_CUBLAS_STATUS(cublasGemmEx(param_.cublas_handle,
                                                  CUBLAS_OP_N, CUBLAS_OP_N,
                                                  n, m, k,
                                                  &alpha,
                                                  param_.ffn.w1_weight.kernel, AType_, n,
-                                                 attn_norm_out_buf_, BType_, k,
+                                                 from_tensor_int8_buf_, BType_, k,
                                                  &beta,
-                                                 w1_buf_, CType_, n,
+                                                 query_buf_, CType_, n,
                                                  computeType_,
                                                  static_cast<cublasGemmAlgo_t>(cublasAlgo_[0])));
 
                 /**
-                 * w3 gemm
+                 * w3 gemm, Reuse the key_buf_ as w3_buf_
                  */
                 CHECK_CUBLAS_STATUS(cublasGemmEx(param_.cublas_handle,
                                                  CUBLAS_OP_N, CUBLAS_OP_N,
                                                  n, m, k,
                                                  &alpha,
                                                  param_.ffn.w3_weight.kernel, AType_, n,
-                                                 attn_norm_out_buf_, BType_, k,
+                                                 from_tensor_int8_buf_, BType_, k,
                                                  &beta,
-                                                 w3_buf, CType_, n,
+                                                 key_buf_, CType_, n,
                                                  computeType_,
                                                  static_cast<cublasGemmAlgo_t>(cublasAlgo_[0])));
 
                 /**
-                 * dequantized w1_buf_ to w1_out
-                 * dequantized w3_buf_ & silu to w3_out
+                 * dequantized query_buf_ to w1_out
+                 * dequantized key_buf__ & silu to w3_out
                  * pointwise-multiply (w1_out, w3_out) to w13_out
-                 * quantized w13_out to attn_norm_out_buf_, ffn_out_scale
+                 * quantized w13_out to from_tensor_int8_buf_, ffn_inter_scale
                  */
-                launchDequantizedSiluMultifyQuantized(ffn_inter_buf_, w1_buf_, attn_norm_scale_buf_, param_.ffn.w1_weight.weight_scale,
-                                                      w3_buf, param_.ffn.w3_weight.weight_scale, ffn_inter_scale,
+                launchDequantizedSiluMultifyQuantized(from_tensor_int8_buf_, query_buf_, from_tensor_scale_buf_, param_.ffn.w1_weight.weight_scale,
+                                                      key_buf_, param_.ffn.w3_weight.weight_scale, ffn_inter_scale,
                                                       batch_size_ * seq_len, ffn_hidden_units, param_.stream);
 
 #ifndef NDEBUG
@@ -399,20 +385,24 @@ namespace tinycudallama
                 k = ffn_hidden_units;
                 n = hidden_units_;
                 /**
-                 * w2 gemm
+                 * w2 gemm, Reuse the value_buf_ as w2_buf_
                  */
                 CHECK_CUBLAS_STATUS(cublasGemmEx(param_.cublas_handle,
                                                  CUBLAS_OP_N, CUBLAS_OP_N,
                                                  n, m, k,
                                                  &alpha,
                                                  param_.ffn.w2_weight.kernel, AType_, n,
-                                                 attn_norm_out_buf_, BType_, k,
+                                                 from_tensor_int8_buf_, BType_, k,
                                                  &beta,
-                                                 w2_buf_, CType_, n,
+                                                 value_buf_, CType_, n,
                                                  computeType_,
                                                  static_cast<cublasGemmAlgo_t>(cublasAlgo_[0])));
 
-                launchDequantizedResidual<DataType_>(decoder_output, ffn_tensor_buf_, w2_buf_, ffn_out_scale,
+                /**
+                 * dequantized value_buf_ to w2_out used ffn_inter_scale and weight_scale
+                 * add Residual: w2_out + ffn_tensor_buf_ -> decoder_output
+                 */
+                launchDequantizedResidual<DataType_>(decoder_output, ffn_tensor_buf_, value_buf_, ffn_inter_scale,
                                                      param_.ffn.w2_weight.weight_scale, batch_size_ * seq_len, hidden_units_, param_.stream);
 
                 
@@ -420,8 +410,6 @@ namespace tinycudallama
                 cudaDeviceSynchronize();
                 check_cuda_error(cudaGetLastError());
 #endif
-
-
             }
 
             catch (std::runtime_error &error)
@@ -429,26 +417,6 @@ namespace tinycudallama
                 throw error;
             }
         }
-        void masked_multi_head_attention(const DataType_ *from_tensor, DataType_ *key_cache_,
-                                         DataType_ *value_cache_, DataType_ *decoder_output, const int step);
-
-        void cross_multi_head_attention(const DataType_ *from_tensor, const DataType_ *memory_tensor,
-                                        DataType_ *key_mem_cache_, DataType_ *value_mem_cache_,
-                                        DataType_ *decoder_output, const int *memory_sequence_length,
-                                        const int max_seq_len, const int step);
-
-        void ffn(const DataType_ *input, DataType_ *ffn_inner, DataType_ *output,
-                 const int m, const int inner_size, const int n);
-
-        void decoder_norm1(const DataType_ *from_tensor, const DataType_ *gamma,
-                           const DataType_ *beta, DataType_ *norm_from_tensor_buf_, const int m, const int n);
-
-        void decoder_norm2(const DataType_ *from_tensor, const DataType_ *gamma,
-                           const DataType_ *beta, const DataType_ *bias,
-                           DataType_ *output, DataType_ *norm_output_buf_,
-                           const int m, const int n);
-
-        void add_bias_input(DataType_ *output, const DataType_ *input, const int m, const int n);
 
         ~OpenDecoder()
         {
