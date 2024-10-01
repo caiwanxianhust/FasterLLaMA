@@ -103,8 +103,8 @@ namespace tinycudallama
 
     public:
         OpenDecoder(int batch_size, int max_prompt_len, int max_gen_len,
-                    int head_num, int size_per_head) : batch_size_(batch_size),
-                                                       max_prompt_len_(max_prompt_len), max_gen_len_(max_gen_len), head_num_(head_num),
+                    int head_num, int size_per_head) : batch_size_(batch_size), max_prompt_len_(max_prompt_len),
+                                                       max_gen_len_(max_gen_len), head_num_(head_num),
                                                        size_per_head_(size_per_head)
         {
             hidden_units_ = head_num_ * size_per_head_;
@@ -415,18 +415,19 @@ namespace tinycudallama
 
         ~OpenDecoder()
         {
-            norm_from_tensor_buf_ = nullptr;
+            freq_cis_ = nullptr;
+            from_tensor_int8_buf_ = nullptr;
+            from_tensor_scale_buf_ = nullptr;
             query_buf_ = nullptr;
             key_buf_ = nullptr;
             value_buf_ = nullptr;
-            context_buf_ = nullptr;
-
-            masked_output_buf_ = nullptr;
-            norm_masked_output_buf_ = nullptr;
-
-            cross_output_buf_ = nullptr;
-            norm_cross_output_buf_ = nullptr;
-            ffn_inner_buf_ = nullptr;
+            query_out_buf_ = nullptr;
+            key_out_buf_ = nullptr;
+            value_out_fp_buf_ = nullptr;
+            qk_buf_ = nullptr;
+            qkv_buf_ = nullptr;
+            ffn_tensor_buf_ = nullptr;
+            ffn_inter_scale_buf_ = nullptr;
         }
     };
 
