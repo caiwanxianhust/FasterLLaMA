@@ -85,32 +85,27 @@ namespace tinycudallama
         int hidden_units_;
 
         /*  buf_size = batch_size * max_prompt_len_ * head_num * size_per_head
-            cache_size = batch_size, head_num, total_len_, size_per_head
+            cache_size = batch_size * head_num * total_len_ * size_per_head
          */
-        float *freq_cis_;            // [max_prompt_len_, size_per_head]
-        int8_t *from_tensor_int8_buf_;  // [batch_size * max_prompt_len_, head_num * size_per_head]
-        // int8_t *attn_norm_out_buf_;  // buf_size, [batch_size * seq_len, head_num * size_per_head]
-        // float *attn_norm_scale_buf_; // size: batch_size * max_prompt_len_,  [batch_size, seq_len]
-        float *from_tensor_scale_buf_;  // [batch_size, max_prompt_len_]
-        int32_t *query_buf_;         // buf_size, [batch_size * seq_len, head_num * size_per_head]
-        int32_t *key_buf_;           // buf_size, [batch_size * seq_len, head_num * size_per_head]
-        int32_t *value_buf_;         // buf_size, [batch_size * seq_len, head_num * size_per_head]
-        float *query_out_buf_;       // buf_size, [batch_size, head_num, seq_len, size_per_head]
-        float *key_out_buf_;         // buf_size, [batch_size, head_num, start_pos+seq_len, size_per_head]
-        float *value_out_fp_buf_;    // buf_size, [batch_size, head_num, seq_len, size_per_head]
-        float *qk_buf_;             // [batch_size * head_num, seq_len, total_len_]
-        float *qkv_buf_;            // [batch_size * head_num, seq_len, size_per_head]
-        DataType_ *ffn_tensor_buf_; //[batch_size, seq_len, head_num * size_per_head]
-        float *ffn_inter_scale; // [batch_size, seq_len]
-
+        float *freq_cis_;              // [max_prompt_len_, size_per_head]
+        int8_t *from_tensor_int8_buf_; // buf_size, [batch_size * seq_len, head_num * size_per_head]
+        float *from_tensor_scale_buf_; // batch_size * max_prompt_len_, [batch_size, seq_len]
+        int32_t *query_buf_;           // buf_size, [batch_size * seq_len, head_num * size_per_head]
+        int32_t *key_buf_;             // buf_size, [batch_size * seq_len, head_num * size_per_head]
+        int32_t *value_buf_;           // buf_size, [batch_size * seq_len, head_num * size_per_head]
+        float *query_out_buf_;         // buf_size, [batch_size, head_num, seq_len, size_per_head]
+        float *key_out_buf_;           // buf_size, [batch_size, head_num, seq_len, size_per_head]
+        float *value_out_fp_buf_;      // buf_size, [batch_size, head_num, seq_len, size_per_head]
+        float *qk_buf_;                // [batch_size * head_num, seq_len, total_len_]
+        float *qkv_buf_;               // buf_size, [batch_size * head_num, seq_len, size_per_head]
+        DataType_ *ffn_tensor_buf_;    // buf_size, [batch_size, seq_len, head_num * size_per_head]
+        float *ffn_inter_scale_buf_;   // batch_size * max_prompt_len_, [batch_size, seq_len]
 
     public:
-        OpenDecoder(int batch_size, int max_seq_len,
-                    int head_num, int size_per_head,
-                    int memory_hidden_units) : batch_size_(batch_size),
-                                               max_seq_len_(max_seq_len), head_num_(head_num),
-                                               size_per_head_(size_per_head),
-                                               memory_hidden_units_(memory_hidden_units)
+        OpenDecoder(int batch_size, int max_prompt_len, int max_gen_len,
+                    int head_num, int size_per_head) : batch_size_(batch_size),
+                                                       max_prompt_len_(max_prompt_len), max_gen_len_(max_gen_len), head_num_(head_num),
+                                                       size_per_head_(size_per_head)
         {
             hidden_units_ = head_num_ * size_per_head_;
             total_len_ = max_prompt_len_ + max_gen_len_;
@@ -123,24 +118,25 @@ namespace tinycudallama
         void initialize(DecoderInitParam<DataType_> param, char *buf)
         {
             param_ = param;
-            // int buf_size = batch_size_ * hidden_units_;
-            // norm_from_tensor_buf_ = buf;
-            // query_buf_ = buf + buf_size; // store the query values (from_tensor * Q) in both masked and multi-head attention
-            // key_buf_ = buf + 2 * buf_size;
-            // value_buf_ = buf + 3 * buf_size;
-            // context_buf_ = buf + 4 * buf_size; // store the context result (softmax(qk)v) in both masked and multi-head attention
+            int buf_size = batch_size * max_prompt_len_ * head_num * size_per_head;
+            freq_cis_ = (float *)(buf);
+            from_tensor_int8_buf_ = (int8_t *)(freq_cis_ + max_prompt_len_ * size_per_head_);
+            from_tensor_scale_buf_ = (float *)(from_tensor_int8_buf_ + buf_size);
+            query_buf_ = (int32_t *)(from_tensor_scale_buf_ + batch_size_ * max_prompt_len_);
+            key_buf_ = (int32_t *)(query_buf_ + buf_size);
+            value_buf_ = (int32_t *)(key_buf_ + buf_size);
+            query_out_buf_ = (float *)(value_buf_ + buf_size);
+            key_out_buf_ = (float *)(query_out_buf_ + buf_size);
+            value_out_fp_buf_ = (float *)(key_out_buf_ + buf_size);
+            qk_buf_ = (float *)(value_out_fp_buf_ + buf_size);
+            qkv_buf_ = (float *)(qk_buf_ + batch_size * head_num * max_prompt_len_ * total_len_);
+            ffn_tensor_buf_ = (DataType_ *)(qkv_buf_ + buf_size);
+            ffn_inter_scale_buf_ = (float *)(ffn_tensor_buf_ + buf_size);
 
-            // masked_output_buf_ = buf + 5 * buf_size;      // masked_attention_output
-            // norm_masked_output_buf_ = buf + 6 * buf_size; // norm(masked_attention_output)
-
-            // cross_output_buf_ = buf + 7 * buf_size;      // mutli-head attention_output
-            // norm_cross_output_buf_ = buf + 8 * buf_size; // norm(multi-head attention_output)
-            // ffn_inner_buf_ = buf + 9 * buf_size;         // 4 buf size to store inner product
-
-            launchPrecomputeFreqsCis(freq_cis_, size_per_head_, max_seq_len_, param_.stream);
+            launchPrecomputeFreqsCis(freq_cis_, size_per_head_, max_prompt_len_, param_.stream);
         }
         /**
-         * key_cache_ value_cache_: [batch_size, head_num, total_len_, size_per_head]
+         * key_cache_ value_cache_: cache_size, [batch_size, head_num, total_len_, size_per_head]
          */
         void forward(const DataType_ *from_tensor, float *key_cache_, float *value_cache_, int ffn_hidden_units,
                      DataType_ *decoder_output, const int start_pos, const int seq_len)
@@ -202,7 +198,7 @@ namespace tinycudallama
                  * query_buf_, key_buf_ -> query_out_buf_, key_out_buf_
                  */
                 launchQKRoteEmbeddingTranspose(query_out_buf_, key_out_buf_, query_buf_, key_buf_, from_tensor_scale_buf_, from_tensor_scale_buf_,
-                                               param_.attention.query_weight.weight_scale, param_.attention.key_weight.weight_scale, 
+                                               param_.attention.query_weight.weight_scale, param_.attention.key_weight.weight_scale,
                                                freq_cis_, batch_size_, seq_len, start_pos, total_len_, head_num_, size_per_head_, param_.stream);
 
 #ifndef NDEBUG
@@ -371,10 +367,10 @@ namespace tinycudallama
                  * dequantized query_buf_ to w1_out
                  * dequantized key_buf__ & silu to w3_out
                  * pointwise-multiply (w1_out, w3_out) to w13_out
-                 * quantized w13_out to from_tensor_int8_buf_, ffn_inter_scale
+                 * quantized w13_out to from_tensor_int8_buf_, ffn_inter_scale_buf_
                  */
                 launchDequantizedSiluMultifyQuantized(from_tensor_int8_buf_, query_buf_, from_tensor_scale_buf_, param_.ffn.w1_weight.weight_scale,
-                                                      key_buf_, param_.ffn.w3_weight.weight_scale, ffn_inter_scale,
+                                                      key_buf_, param_.ffn.w3_weight.weight_scale, ffn_inter_scale_buf_,
                                                       batch_size_ * seq_len, ffn_hidden_units, param_.stream);
 
 #ifndef NDEBUG
@@ -399,13 +395,12 @@ namespace tinycudallama
                                                  static_cast<cublasGemmAlgo_t>(cublasAlgo_[0])));
 
                 /**
-                 * dequantized value_buf_ to w2_out used ffn_inter_scale and weight_scale
+                 * dequantized value_buf_ to w2_out used ffn_inter_scale_buf_ and weight_scale
                  * add Residual: w2_out + ffn_tensor_buf_ -> decoder_output
                  */
-                launchDequantizedResidual<DataType_>(decoder_output, ffn_tensor_buf_, value_buf_, ffn_inter_scale,
+                launchDequantizedResidual<DataType_>(decoder_output, ffn_tensor_buf_, value_buf_, ffn_inter_scale_buf_,
                                                      param_.ffn.w2_weight.weight_scale, batch_size_ * seq_len, hidden_units_, param_.stream);
 
-                
 #ifndef NDEBUG
                 cudaDeviceSynchronize();
                 check_cuda_error(cudaGetLastError());
