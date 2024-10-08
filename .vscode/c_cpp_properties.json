@@ -3,12 +3,14 @@
         {
             "name": "Linux",
             "includePath": [
-                "${workspaceFolder}/**"
+                "${workspaceFolder}/**",
+                "/usr/local/cuda-11.7/include/**"
             ],
             "defines": [],
             "cStandard": "c17",
             "cppStandard": "gnu++14",
-            "intelliSenseMode": "linux-gcc-x64"
+            "intelliSenseMode": "linux-gcc-x64",
+            "compilerPath": "/usr/bin/g++-9"
         }
     ],
     "version": 4

@@ -1759,4 +1759,36 @@ namespace tinycudallama
         dequantizedResidualKernel<<<nrows, 128, 0, stream>>>(out, from_temsor, inp, inp_scale, weight_scale, hidden_units);
     }
 
+    template <typename T>
+    __global__ void embeddingLookupKernel(T *__restrict__ from_tensor,
+                                          const T *__restrict__ embedding_table,
+                                          const int *__restrict__ word_ids,
+                                          const int hidden_units)
+    {
+        const int tid = threadIdx.x;
+        const int bid = blockIdx.x;
+        const int write_pos = tid + bid * blockDim.x;
+        // 1. lookup the table
+        // 2. multiply hidden_dim**0.5
+        from_tensor[write_pos] = embedding_table[word_ids[bid] * hidden_units + tid] *
+                                 (T)sqrtf(float(hidden_units));
+    }
+
+    template <typename T>
+    void launchEmbeddingLookupKernel(T *__restrict__ from_tensor,
+                                     const T *__restrict__ embedding_table,
+                                     const int *__restrict__ word_ids,
+                                     const int batch_size,
+                                     const int hidden_units,
+                                     cudaStream_t stream)
+    {
+        assert(hidden_units <= 1024);
+        dim3 grid(batch_size);
+        dim3 block(hidden_units);
+        embeddingLookupKernel<T><<<grid, block, 0, stream>>>(from_tensor,
+                                                             embedding_table,
+                                                             word_ids,
+                                                             hidden_units);
+    }
+
 } // tinycudallama

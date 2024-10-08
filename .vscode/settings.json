@@ -2,6 +2,7 @@
     "files.associations": {
         "new": "cpp",
         "random": "cpp",
-        "cmath": "cpp"
+        "cmath": "cpp",
+        "ios": "cpp"
     }
 }

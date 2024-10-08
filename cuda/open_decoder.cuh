@@ -87,7 +87,6 @@ namespace tinycudallama
         /*  buf_size = batch_size * max_prompt_len_ * head_num * size_per_head
             cache_size = batch_size * head_num * total_len_ * size_per_head
          */
-        float *freq_cis_;              // [max_prompt_len_, size_per_head]
         int8_t *from_tensor_int8_buf_; // buf_size, [batch_size * seq_len, head_num * size_per_head]
         float *from_tensor_scale_buf_; // batch_size * max_prompt_len_, [batch_size, seq_len]
         int32_t *query_buf_;           // buf_size, [batch_size * seq_len, head_num * size_per_head]
@@ -107,6 +106,9 @@ namespace tinycudallama
                                                        max_gen_len_(max_gen_len), head_num_(head_num),
                                                        size_per_head_(size_per_head)
         {
+#ifndef NDEBUG
+    PRINT_FUNC_NAME_();
+#endif
             hidden_units_ = head_num_ * size_per_head_;
             total_len_ = max_prompt_len_ + max_gen_len_;
             for (int i = 0; i < 5; i++)
@@ -117,10 +119,12 @@ namespace tinycudallama
 
         void initialize(DecoderInitParam<DataType_> param, char *buf)
         {
+#ifndef NDEBUG
+    PRINT_FUNC_NAME_();
+#endif
             param_ = param;
             int buf_size = batch_size * max_prompt_len_ * head_num * size_per_head;
-            freq_cis_ = (float *)(buf);
-            from_tensor_int8_buf_ = (int8_t *)(freq_cis_ + max_prompt_len_ * size_per_head_);
+            from_tensor_int8_buf_ = (int8_t *)(buf);
             from_tensor_scale_buf_ = (float *)(from_tensor_int8_buf_ + buf_size);
             query_buf_ = (int32_t *)(from_tensor_scale_buf_ + batch_size_ * max_prompt_len_);
             key_buf_ = (int32_t *)(query_buf_ + buf_size);
@@ -133,14 +137,21 @@ namespace tinycudallama
             ffn_tensor_buf_ = (DataType_ *)(qkv_buf_ + buf_size);
             ffn_inter_scale_buf_ = (float *)(ffn_tensor_buf_ + buf_size);
 
-            launchPrecomputeFreqsCis(freq_cis_, size_per_head_, max_prompt_len_, param_.stream);
+#ifndef NDEBUG
+            cudaDeviceSynchronize();
+            check_cuda_error(cudaGetLastError());
+#endif
         }
         /**
          * key_cache_ value_cache_: cache_size, [batch_size, head_num, total_len_, size_per_head]
+         * freq_cis_: [max_prompt_len_, size_per_head]
          */
-        void forward(const DataType_ *from_tensor, float *key_cache_, float *value_cache_, int ffn_hidden_units,
+        void forward(const DataType_ *from_tensor, const float *freq_cis, float *key_cache_, float *value_cache_, int ffn_hidden_units,
                      DataType_ *decoder_output, const int start_pos, const int seq_len)
         {
+#ifndef NDEBUG
+    PRINT_FUNC_NAME_();
+#endif
             const AlphaBetaType_ alpha = 1;
             const AlphaBetaType_ beta = 0;
             try
@@ -199,7 +210,7 @@ namespace tinycudallama
                  */
                 launchQKRoteEmbeddingTranspose(query_out_buf_, key_out_buf_, query_buf_, key_buf_, from_tensor_scale_buf_, from_tensor_scale_buf_,
                                                param_.attention.query_weight.weight_scale, param_.attention.key_weight.weight_scale,
-                                               freq_cis_, batch_size_, seq_len, start_pos, total_len_, head_num_, size_per_head_, param_.stream);
+                                               freq_cis, batch_size_, seq_len, start_pos, total_len_, head_num_, size_per_head_, param_.stream);
 
 #ifndef NDEBUG
                 cudaDeviceSynchronize();
@@ -415,7 +426,6 @@ namespace tinycudallama
 
         ~OpenDecoder()
         {
-            freq_cis_ = nullptr;
             from_tensor_int8_buf_ = nullptr;
             from_tensor_scale_buf_ = nullptr;
             query_buf_ = nullptr;
