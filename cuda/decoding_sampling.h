@@ -19,6 +19,8 @@ namespace tinycudallama
 
         ResNormWeight<T> decodingnorm;
 
+        DenseWeight<T> output_weight;
+
         int *output_ids;
         int *parent_ids;
         int *sequence_length;
@@ -33,6 +35,7 @@ namespace tinycudallama
         int head_num_;
         int size_per_head_;
         int hidden_units_;
+        int ffn_hidden_units_;
     };
 
     struct DecodingArguments : public TransformerArguments
@@ -40,6 +43,7 @@ namespace tinycudallama
         int decoder_layers_;
         int vocab_size_;
         int start_id_;
+        // the eos token's index
         int end_id_;
         int max_prompt_len_;
         int max_gen_len;
@@ -108,7 +112,7 @@ namespace tinycudallama
                          const int head_num, const int size_per_head,
                          const int vocab_size, const int decoder_layers,
                          const int start_id, const int end_id,
-                         const int candidate_num = 0,
+                         const int ffn_hidden_units, const int candidate_num = 0,
                          const float probability_threshold = 0.0) : allocator_(allocator)
         {
             args_.batch_size_ = batch_size;
@@ -123,6 +127,7 @@ namespace tinycudallama
             args_.probability_threshold_ = probability_threshold;
             args_.start_id_ = start_id;
             args_.end_id_ = end_id;
+            args_.ffn_hidden_units_ = ffn_hidden_units;
 
             // Only one (top-k or top-p sampling) can be selected
             if (args_.candidate_num_ == 0 && args_.probability_threshold_ == 0.0)
@@ -282,10 +287,6 @@ namespace tinycudallama
             PRINT_FUNC_NAME_();
 #endif
 
-            const int m = args_.batch_size_;
-            const int k = args_.hidden_units_;
-            const int n = args_.vocab_size_;
-
             /*
               sequence_length initialize to 0
               finished: false
@@ -332,19 +333,19 @@ namespace tinycudallama
             launchPrecomputeFreqsCis(decoding_params.freq_cis, args_.size_per_head_, total_seq_len, decoding_params.stream);
 
 #ifndef NDEBUG
-                cudaDeviceSynchronize();
-                check_cuda_error(cudaGetLastError());
+            cudaDeviceSynchronize();
+            check_cuda_error(cudaGetLastError());
 #endif
             int prev_pos = 0;
             for (int cur_pos = min_prompt_seq_len; cur_pos < total_seq_len; ++cur_pos)
             {
-                int prev_seq_len = cur_pos - prev_pos + 1;
+                int cur_seq_len = cur_pos - prev_pos + 1;
 
                 /**
                  * Embedding Lookup
                  */
                 launchEmbeddingLookupKernel(from_tensor_[0], decoding_params.embedding_table, word_ids_buf_,
-                                            args_.batch_size_ * prev_seq_len, args_.hidden_units_, decoding_params.stream);
+                                            args_.batch_size_ * cur_seq_len, args_.hidden_units_, decoding_params.stream);
 
 #ifndef NDEBUG
                 cudaDeviceSynchronize();
@@ -375,75 +376,33 @@ namespace tinycudallama
                     cudaDeviceSynchronize();
                     check_cuda_error(cudaGetLastError());
 #endif
-                    decoder_->forward(from_tensor_[from_id], decoding_params.memory_tensor,
+                    decoder_->forward(from_tensor_[from_id], decoding_params.freq_cis,
                                       K_cache_[0] + layer * cache_size,
                                       V_cache_[0] + layer * cache_size,
-                                      K_mem_cache_[layer], V_mem_cache_[layer],
-                                      decoding_params.memory_sequence_length, from_tensor_[out_id], step);
+                                      args_.ffn_hidden_units_,
+                                      from_tensor_[out_id], prev_pos, cur_seq_len);
 
 #ifndef NDEBUG
                     cudaDeviceSynchronize();
                     check_cuda_error(cudaGetLastError());
 #endif
                 }
-            }
 
-            for (int step = 1; step <= args_.seq_len_; ++step)
-            {
-                embedding_lookup_sine_position_encoding_kernel_launcher(from_tensor_[0],
-                                                                        decoding_params.embedding_table,
-                                                                        decoding_params.position_encoding_table + (step - 1) * args_.hidden_units_,
-                                                                        word_ids_buf_,
-                                                                        args_.batch_size_,
-                                                                        args_.hidden_units_,
-                                                                        decoding_params.stream);
-
-                int from_id, out_id;
-                for (int layer = 0; layer < args_.decoder_layers_; ++layer)
-                {
-                    /*
-                      For the first layer (layer-0), from_id is 0. We also stored the embedding lookup
-                      result in from_tensor_[0]
-                    */
-                    from_id = layer & 0x1;
-                    out_id = 1 - from_id;
-
-                    /*
-                      We use one decoder_ object to process multiple decoder layers.
-
-                      At the beginning of each decoder layer, we initialize the decoder object
-                      with corresponding weights and decoder_buf_.
-
-                      The decoder_buf_ is reused.
-                    */
-                    decoder_->initialize(param[layer], decoder_buf_);
-
-#ifndef NDEBUG
-                    cudaDeviceSynchronize();
-                    check_cuda_error(cudaGetLastError());
-#endif
-                    decoder_->forward(from_tensor_[from_id], decoding_params.memory_tensor,
-                                      K_cache_[0] + layer * cache_size,
-                                      V_cache_[0] + layer * cache_size,
-                                      K_mem_cache_[layer], V_mem_cache_[layer],
-                                      decoding_params.memory_sequence_length, from_tensor_[out_id], step);
-
-#ifndef NDEBUG
-                    cudaDeviceSynchronize();
-                    check_cuda_error(cudaGetLastError());
-#endif
-                }
-                decoder_->decoder_norm1(from_tensor_[out_id], decoding_params.layernorm.gamma,
-                                        decoding_params.layernorm.beta, decoder_normed_result_buf_, m, k);
+                launchResNormKernel(decoder_normed_result_buf_, from_tensor_[out_id], decoding_params.decodingnorm.gamma,
+                                    decoding_params.decodingnorm.eps, args_.batch_size_ * cur_seq_len,
+                                    args_.hidden_units_, decoding_params.stream);
 
                 float alpha = (float)1.0f;
                 float beta = (float)0.0f;
+                int m = args_.batch_size_ * cur_seq_len;
+                int k = args_.hidden_units_;
+                int n = args_.vocab_size_;
 
                 check_cuda_error(cublasGemmEx(decoding_params.cublas_handle,
                                               CUBLAS_OP_N, CUBLAS_OP_N,
                                               n, m, k,
                                               &alpha,
-                                              decoding_params.embedding_kernel, AType_, n,
+                                              decoding_params.output_weight.kernel, AType_, n,
                                               decoder_normed_result_buf_, BType_, k,
                                               &beta,
                                               logits_buf_, CUDA_R_32F, n,
@@ -458,7 +417,8 @@ namespace tinycudallama
                 if (args_.candidate_num_ != 0)
                 {
                     // top k sampling
-                    update_logits_without_softmax(logits_buf_, decoding_params.embedding_bias, args_.end_id_, finished_buf_, m, n, decoding_params.stream);
+                    launchUpdateLogitsWithoutSoftmax(step_logits_buf_, logits_buf_, args_.end_id_, finished_buf_, args_.batch_size_,
+                                                     cur_seq_len, args_.vocab_size_, decoding_params.stream);
                     topK_sampling_kernel_kernelLauncher(logits_buf_,
                                                         topk_ids_buf_,
                                                         topk_val_buf_,
@@ -486,25 +446,9 @@ namespace tinycudallama
                                                         decoding_params.sequence_length,
                                                         decoding_params.stream);
                 }
-
-                word_ids_buf_ = decoding_params.output_ids + (step - 1) * args_.batch_size_;
-
-#ifndef NDEBUG
-                cudaDeviceSynchronize();
-                check_cuda_error(cudaGetLastError());
-#endif
-
-                // TODO
-                // Find a better method to check the is_finished
-                cudaMemcpy(h_finished_buf_, finished_buf_, sizeof(bool) * args_.batch_size_, cudaMemcpyDeviceToHost);
-                int sum = 0;
-                for (int i = 0; i < args_.batch_size_; i++)
-                {
-                    sum += (int)h_finished_buf_[i];
-                }
-                if (sum == args_.batch_size_)
-                    break;
             }
+
+           
         }
 
         virtual ~DecodingSampling()

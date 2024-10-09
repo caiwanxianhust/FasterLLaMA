@@ -3,6 +3,7 @@
         "new": "cpp",
         "random": "cpp",
         "cmath": "cpp",
-        "ios": "cpp"
+        "ios": "cpp",
+        "type_traits": "cpp"
     }
 }
