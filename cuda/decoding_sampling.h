@@ -15,7 +15,12 @@ namespace tinycudallama
 
         float *freq_cis;
 
+        // the length of tokens in the batch. [batch_size, ]
         const int *prompt_sequence_length;
+        // [batch_size, max_prompt_seq_len]
+        const int *prompt_tokens;
+        // [batch_size, max_prompt_seq_len], pad token is 0, otherwise 1.
+        const int *prompt_tokens_mask;
 
         ResNormWeight<T> decodingnorm;
 
@@ -290,14 +295,13 @@ namespace tinycudallama
             /*
               sequence_length initialize to 0
               finished: false
-              word_ids: start_id_
               cum_log_buf_: useless, keep it to reuse the kernel of decoding_opennmt.h
             */
 
             if (args_.candidate_num_ != 0)
             {
-                init_kernelLauncher(finished_buf_, decoding_params.sequence_length, word_ids_buf_, cum_log_buf_,
-                                    args_.start_id_, args_.batch_size_, 1, decoding_params.stream);
+                launchTopKSamplingInitKernel(finished_buf_, decoding_params.sequence_length, cum_log_buf_,
+                                             args_.batch_size_, decoding_params.stream)
             }
             else if (args_.probability_threshold_ != 0.0)
             {
@@ -339,13 +343,21 @@ namespace tinycudallama
             int prev_pos = 0;
             for (int cur_pos = min_prompt_seq_len; cur_pos < total_seq_len; ++cur_pos)
             {
-                int cur_seq_len = cur_pos - prev_pos + 1;
+                int cur_seq_len = cur_pos - prev_pos;
 
                 /**
                  * Embedding Lookup
                  */
-                launchEmbeddingLookupKernel(from_tensor_[0], decoding_params.embedding_table, word_ids_buf_,
-                                            args_.batch_size_ * cur_seq_len, args_.hidden_units_, decoding_params.stream);
+                if (cur_seq_len > 1)
+                {
+                    launchEmbeddingLookupKernel(from_tensor_[0], decoding_params.embedding_table, decoding_params.prompt_tokens,
+                                                args_.batch_size_, cur_seq_len, max_prompt_seq_len, args_.hidden_units_, decoding_params.stream);
+                }
+                else
+                {
+                    launchEmbeddingLookupKernel(from_tensor_[0], decoding_params.embedding_table, word_ids_buf_,
+                                                args_.batch_size_, 1, 1, args_.hidden_units_, decoding_params.stream);
+                }
 
 #ifndef NDEBUG
                 cudaDeviceSynchronize();
@@ -447,8 +459,6 @@ namespace tinycudallama
                                                         decoding_params.stream);
                 }
             }
-
-           
         }
 
         virtual ~DecodingSampling()

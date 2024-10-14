@@ -1759,6 +1759,28 @@ namespace tinycudallama
         dequantizedResidualKernel<<<nrows, 128, 0, stream>>>(out, from_temsor, inp, inp_scale, weight_scale, hidden_units);
     }
 
+    /**
+     * decoding_params.sequence_length is initialized by 0
+     * finished_buf_ is initialized by false
+     * cum_log_probs is initialized by 0
+     */
+    __global__ void topKSamplingInitKernel(bool *__restrict__ finished, int *__restrict__ sequence_length,
+                                           float *__restrict__ cum_log_probs)
+    {
+        int tid = threadIdx.x;
+        finished[tid] = false;
+        sequence_length[tid] = 0;
+        cum_log_probs[tid] = 0.0f;
+    }
+
+    void launchTopKSamplingInitKernel(bool *__restrict__ finished, int *__restrict__ sequence_length,
+                                      float *__restrict__ cum_log_probs, const int batch_size, cudaStream_t stream = 0)
+    {
+        dim3 grid(1);
+        dim3 block(min(1024, batch_size));
+        topKSamplingInitKernel<<<grid, block, 0, stream>>>(finished, sequence_length, cum_log_probs);
+    }
+
     template <typename T>
     __global__ void embeddingLookupKernel(T *__restrict__ from_tensor,
                                           const T *__restrict__ embedding_table,
@@ -1766,11 +1788,12 @@ namespace tinycudallama
                                           const int hidden_units)
     {
         const int tid = threadIdx.x;
-        const int bid = blockIdx.x;
-        const int write_pos = tid + bid * blockDim.x;
+        const int token_id = blockIdx.x;
+        const int batch_id = blockIdx.y;
+        const int write_pos = tid + token_id * blockDim.x + batch_id * gridDim.x * blockDim.x;
         // 1. lookup the table
         // 2. multiply hidden_dim**0.5
-        from_tensor[write_pos] = embedding_table[word_ids[bid] * hidden_units + tid] *
+        from_tensor[write_pos] = embedding_table[word_ids[batch_id * gridDim.x + token_id] * hidden_units + tid] *
                                  (T)sqrtf(float(hidden_units));
     }
 
@@ -1778,12 +1801,12 @@ namespace tinycudallama
     void launchEmbeddingLookupKernel(T *__restrict__ from_tensor,
                                      const T *__restrict__ embedding_table,
                                      const int *__restrict__ word_ids,
-                                     const int batch_size,
+                                     const int batch_size, const int cur_seq_len, const int seq_len,
                                      const int hidden_units,
                                      cudaStream_t stream = 0)
     {
         assert(hidden_units <= 1024);
-        dim3 grid(batch_size);
+        dim3 grid(cur_seq_len, batch_size);
         dim3 block(hidden_units);
         embeddingLookupKernel<T><<<grid, block, 0, stream>>>(from_tensor,
                                                              embedding_table,
