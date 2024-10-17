@@ -1948,10 +1948,10 @@ namespace tinycudallama
         }
     }
 
-#define CASE_K(K)                                                                                                                       \
-    case K:                                                                                                                             \
+#define CASE_K(K)                                                                                                                                   \
+    case K:                                                                                                                                         \
         beam_topK_kernel<T, K, local_block_size><<<batch_size, local_block_size, 0, stream>>>(log_probs,                                            \
-                                                                                  topk_tmp_id_buf, topk_tmp_val_buf, vocab_size, 0.0f); \
+                                                                                              topk_tmp_id_buf, topk_tmp_val_buf, vocab_size, 0.0f); \
         break;
 
     template <typename T>
@@ -1990,8 +1990,55 @@ namespace tinycudallama
             local_block_size = 1024;
         }
         topKSampling<T><<<1, local_block_size, 0, stream>>>(topk_tmp_id_buf, topk_tmp_val_buf, ids, sequence_length, finished_buf,
-                                                      prompt_tokens, prompt_tokens_mask, cur_pos, max_prompt_seq_len, candidate_num,
-                                                      random_num, end_id, vocab_size);
+                                                            prompt_tokens, prompt_tokens_mask, cur_pos, max_prompt_seq_len, candidate_num,
+                                                            random_num, end_id, vocab_size);
+    }
+
+    __global__ void updateLogitsKernelWithoutLog(float *__restrict__ step_logits, const float *__restrict__ logits,
+                                                 const bool *__restrict__ finished,
+                                                 const int seq_len, const int end_id, const int vocab_size)
+    {
+        int bid = blockIdx.x;
+        bool finish = finished[bid];
+        int offset = bid * vocab_size;
+
+        float max_val = -1 * FLT_MAX;
+
+        for (int tid = threadIdx.x; tid < vocab_size; tid += blockDim.x)
+        {
+            int idx = bid * seq_len * vocab_size + (seq_len - 1) * vocab_size + tid;
+            if (finish)
+                step_logits[offset + tid] = (tid == end_id) ? FLT_MAX : -1 * FLT_MAX;
+            else
+                step_logits[offset + tid] = logits[idx];
+            max_val = max(max_val, step_logits[offset + tid]);
+        }
+
+        max_val = blockAllReduceMax<float>(max_val);
+
+        float sum_val = 0.0f;
+        for (int tid = threadIdx.x; tid < n; tid += blockDim.x)
+        {
+            step_logits[offset + tid] = __expf(step_logits[offset + tid] - max_val);
+            sum_val += step_logits[offset + tid];
+        }
+
+        sum_val = blockAllReduceSum<float>(sum_val);
+
+        for (int tid = threadIdx.x; tid < n; tid += blockDim.x)
+        {
+            step_logits[offset + tid] = (step_logits[offset + tid] / sum_val);
+        }
+    }
+
+    void launchUpdateLogitsKernelWithoutLog(float *__restrict__ step_logits, const float *__restrict__ logits,
+                                            const bool *__restrict__ finished, const int seq_len, const int end_id,
+                                            const int batch_size, const int vocab_size, cudaStream_t stream = 0)
+    {
+        dim3 grid(batch_size);
+        dim3 block(min(vocab_size, 1024));
+        /*n is the vocab_size, e.g., 30000, 7000.... vocab_size is usually very big. */
+        updateLogitsKernelWithoutLog<<<grid, block, 0, stream>>>(step_logits, logits, finished, seq_len, end_id, vocab_size);
     }
 
 } // tinycudallama

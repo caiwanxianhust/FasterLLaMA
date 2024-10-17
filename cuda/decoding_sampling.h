@@ -444,7 +444,9 @@ namespace tinycudallama
                 else if (args_.probability_threshold_ != 0.0)
                 {
                     // top p sampling
-                    update_logits_without_log(logits_buf_, decoding_params.embedding_bias, args_.end_id_, finished_buf_, m, n, decoding_params.stream);
+                    // step_logits_buf_ = logits_buf[:, -1, :]，Set the logits component corresponding to end_id to the maximum value, softmax
+                    launchUpdateLogitsKernelWithoutLog(step_logits_buf_, logits_buf_, finished_buf_, cur_seq_len, args_.end_id_,
+                                                       args_.batch_size_, args_.vocab_size_, decoding_params.stream);
                     topP_sampling_kernel_kernelLauncher(logits_buf_,
                                                         topp_id_vals_buf_,
                                                         topp_sorted_log_prob_buf_,
