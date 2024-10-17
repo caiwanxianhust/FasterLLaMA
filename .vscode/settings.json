@@ -4,6 +4,7 @@
         "random": "cpp",
         "cmath": "cpp",
         "ios": "cpp",
-        "type_traits": "cpp"
+        "type_traits": "cpp",
+        "*.tcc": "cpp"
     }
 }

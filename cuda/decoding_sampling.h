@@ -20,7 +20,7 @@ namespace tinycudallama
         // [batch_size, max_prompt_seq_len]
         const int *prompt_tokens;
         // [batch_size, max_prompt_seq_len], pad token is 0, otherwise 1.
-        const int *prompt_tokens_mask;
+        const bool *prompt_tokens_mask;
 
         ResNormWeight<T> decodingnorm;
 
@@ -348,13 +348,15 @@ namespace tinycudallama
                 /**
                  * Embedding Lookup
                  */
-                if (cur_seq_len > 1)
+                if (cur_pos == min_prompt_seq_len)
                 {
+                    // prompt phase, prompt_tokens[:, :cur_pos] is embedded to from_tensor which shape is [batch_size, cur_seq_len, hidden_units]
                     launchEmbeddingLookupKernel(from_tensor_[0], decoding_params.embedding_table, decoding_params.prompt_tokens,
                                                 args_.batch_size_, cur_seq_len, max_prompt_seq_len, args_.hidden_units_, decoding_params.stream);
                 }
                 else
                 {
+                    // generation phase, word_ids_buf_ is embedded to from_tensor which shape is [batch_size, hidden_units]
                     launchEmbeddingLookupKernel(from_tensor_[0], decoding_params.embedding_table, word_ids_buf_,
                                                 args_.batch_size_, 1, 1, args_.hidden_units_, decoding_params.stream);
                 }
@@ -429,17 +431,15 @@ namespace tinycudallama
                 if (args_.candidate_num_ != 0)
                 {
                     // top k sampling
+                    // step_logits_buf_ = logits_buf[:, -1, :]，and Set the logits component corresponding to end_id to the maximum value
                     launchUpdateLogitsWithoutSoftmax(step_logits_buf_, logits_buf_, args_.end_id_, finished_buf_, args_.batch_size_,
                                                      cur_seq_len, args_.vocab_size_, decoding_params.stream);
-                    topK_sampling_kernel_kernelLauncher(logits_buf_,
-                                                        topk_ids_buf_,
-                                                        topk_val_buf_,
-                                                        decoding_params.output_ids + (step - 1) * args_.batch_size_,
-                                                        decoding_params.sequence_length,
-                                                        finished_buf_,
-                                                        step, // used as random number
-                                                        args_,
-                                                        decoding_params.stream);
+                    launchTopKSamplingKernel(step_logits_buf_, topk_ids_buf_, topk_val_buf_,
+                                             decoding_params.output_ids + (step - 1) * args_.batch_size_, decoding_params.sequence_length,
+                                             finished_buf_, decoding_params.prompt_tokens, decoding_params.prompt_tokens_mask,
+                                             cur_pos, max_prompt_seq_len,
+                                             cur_pos, // used as a random seed
+                                             args_.batch_size_, args_.vocab_size_, args_.candidate_num_, args_.end_id_, decoding_params.stream);
                 }
                 else if (args_.probability_threshold_ != 0.0)
                 {

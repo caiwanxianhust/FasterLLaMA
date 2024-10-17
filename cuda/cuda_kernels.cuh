@@ -3,6 +3,7 @@
 #include <cub/cub.cuh>
 #include <assert.h>
 #include <cuda_fp16.h>
+#include <curand_kernel.h>
 
 namespace tinycudallama
 {
@@ -1849,63 +1850,65 @@ namespace tinycudallama
         updateLogitsWithoutSoftmax<<<grid, block, 0, stream>>>(step_logits, logits, end_id, finished, seq_len, vocab_size);
     }
 
-    // Sampling kernels
+    /**
+     * top-k Sampling kernel
+     * grid(1), block(batch_size)
+     */
     template <typename T>
-    __global__ void sampling(int *topk_tmp_id_buf,
-                             T *topk_tmp_val_buf,
-                             int *ids,
-                             int *sequence_length,
-                             bool *finished_buf,
-                             const int candidate_num,
-                             int random_num,
-                             const int end_id,
-                             const int vocab_size)
+    __global__ void topKSampling(int *__restrict__ topk_tmp_id_buf, T *__restrict__ topk_tmp_val_buf, int *__restrict__ ids,
+                                 int *__restrict__ sequence_length, bool *__restrict__ finished_buf,
+                                 const int *__restrict__ prompt_tokens, const bool *__restrict__ prompt_tokens_mask,
+                                 const int cur_pos, const int max_prompt_seq_len, const int candidate_num,
+                                 const int random_num, const int end_id, const int batch_size, const int vocab_size)
     {
-        int tid = threadIdx.x;
-        int bid = blockIdx.x;
-        __shared__ T sum;
-        __shared__ T rand_num;
-
-        if (tid < candidate_num)
+        if (threadIdx.x < batch_size)
         {
-            T max_val = topk_tmp_val_buf[bid * candidate_num];
-            topk_tmp_val_buf[bid * candidate_num + tid] = __expf(topk_tmp_val_buf[bid * candidate_num + tid] - max_val);
-        }
-
-        if (tid == 0)
-        {
-            sum = 0.0f;
-            for (int i = 0; i < candidate_num; i++)
+            // prompt phase, next_token[:] = prompt_tokens[:, cur_pos]
+            if (prompt_tokens_mask[threadIdx.x * max_prompt_seq_len + cur_pos])
             {
-                sum = sum + topk_tmp_val_buf[bid * candidate_num + i];
+                ids[threadIdx.x] = prompt_tokens[threadIdx.x * max_prompt_seq_len + cur_pos];
             }
-
-            curandState_t local_state;
-            curand_init((T)random_num, bid, 0, &local_state);
-            rand_num = (T)curand_uniform(&local_state) * sum;
-
-            ids[bid] = topk_tmp_id_buf[bid * candidate_num + candidate_num - 1] % vocab_size;
-            for (int i = 0; i < candidate_num; i++)
+            else
             {
-                rand_num = rand_num - topk_tmp_val_buf[bid * candidate_num + i];
-                if (rand_num <= 0.0f)
+                // The maximum number of k logits in the current batch
+                float max_val = (float)topk_tmp_val_buf[threadIdx.x * candidate_num];
+
+                float sum = 0.0f;
+                float tmp_val;
+                for (int i = 0; i < candidate_num; ++i)
                 {
-                    ids[bid] = topk_tmp_id_buf[bid * candidate_num + i] % vocab_size;
-                    break;
+                    tmp_val = __expf(topk_tmp_val_buf[threadIdx.x * candidate_num + i] - max_val);
+                    topk_tmp_val_buf[threadIdx.x * candidate_num + i] = tmp_val;
+                    sum += tmp_val;
                 }
-            }
 
-            sequence_length[bid] = finished_buf[bid] ? sequence_length[bid] : sequence_length[bid] + 1;
-            finished_buf[bid] = ids[bid] == end_id ? 1 : 0;
+                curandState_t local_state;
+                curand_init(random_num, threadIdx.x, 0, &local_state);
+                float rand_num = curand_uniform(&local_state) * sum;
+
+                ids[threadIdx.x] = topk_tmp_id_buf[threadIdx.x * candidate_num + candidate_num - 1] % vocab_size;
+                for (int i = 0; i < candidate_num; i++)
+                {
+                    rand_num = rand_num - topk_tmp_val_buf[threadIdx.x * candidate_num + i];
+                    if (rand_num <= 0.0f)
+                    {
+                        ids[threadIdx.x] = topk_tmp_id_buf[threadIdx.x * candidate_num + i] % vocab_size;
+                        break;
+                    }
+                }
+
+                sequence_length[threadIdx.x] = finished_buf[threadIdx.x] ? sequence_length[bid] : sequence_length[bid] + 1;
+                finished_buf[threadIdx.x] = ids[threadIdx.x] == end_id ? 1 : 0;
+            }
         }
     }
 
     template <typename T, int MAX_K, int THREADBLOCK_SIZE>
     __launch_bounds__(THREADBLOCK_SIZE)
         __global__
-        void beam_topK_kernel(const T *log_probs,
-                              int *topk_tmp_id_buf,
-                              T *topk_tmp_val_buf,
+        void beam_topK_kernel(const T *__restrict__ log_probs,
+                              int *__restrict__ topk_tmp_id_buf,
+                              T *__restrict__ topk_tmp_val_buf,
                               const int vocab_size,
                               T diversity_rate)
     {
@@ -1947,25 +1950,18 @@ namespace tinycudallama
 
 #define CASE_K(K)                                                                                                                       \
     case K:                                                                                                                             \
-        beam_topK_kernel<T, K, block_size><<<batch_size, block_size, 0, stream>>>(log_probs,                                            \
+        beam_topK_kernel<T, K, local_block_size><<<batch_size, local_block_size, 0, stream>>>(log_probs,                                            \
                                                                                   topk_tmp_id_buf, topk_tmp_val_buf, vocab_size, 0.0f); \
         break;
 
     template <typename T>
-    void topK_sampling_kernel_kernelLauncher(T *log_probs,
-                                             int *topk_tmp_id_buf,
-                                             T *topk_tmp_val_buf,
-                                             int *ids,
-                                             int *sequence_length,
-                                             bool *finished_buf,
-                                             int random_num,
-                                             const int batch_size,
-                                             const int vocab_size,
-                                             const int candidate_num,
-                                             const int end_id,
-                                             cudaStream_t stream = 0)
+    void launchTopKSamplingKernel(T *__restrict__ log_probs, int *__restrict__ topk_tmp_id_buf, T *__restrict__ topk_tmp_val_buf,
+                                  int *__restrict__ ids, int *__restrict__ sequence_length, bool *__restrict__ finished_buf,
+                                  const int *__restrict__ prompt_tokens, const bool *__restrict__ prompt_tokens_mask,
+                                  const int cur_pos, const int max_prompt_seq_len, int random_num, const int batch_size,
+                                  const int vocab_size, const int candidate_num, const int end_id, cudaStream_t stream = 0)
     {
-        const int block_size = 256;
+        int local_block_size = 256;
         switch (candidate_num)
         {
             CASE_K(1);
@@ -1976,9 +1972,26 @@ namespace tinycudallama
             exit(0);
             break;
         }
-        sampling<T><<<batch_size, candidate_num, 0, stream>>>(topk_tmp_id_buf, topk_tmp_val_buf,
-                                                              ids, sequence_length, finished_buf,
-                                                              candidate_num, random_num, end_id, vocab_size);
+        assert(batch_size <= 1024);
+        if (batch_size <= 128)
+        {
+            local_block_size = 128
+        }
+        else if (batch_size <= 256)
+        {
+            local_block_size = 256;
+        }
+        else if (batch_size <= 512)
+        {
+            local_block_size = 512;
+        }
+        else
+        {
+            local_block_size = 1024;
+        }
+        topKSampling<T><<<1, local_block_size, 0, stream>>>(topk_tmp_id_buf, topk_tmp_val_buf, ids, sequence_length, finished_buf,
+                                                      prompt_tokens, prompt_tokens_mask, cur_pos, max_prompt_seq_len, candidate_num,
+                                                      random_num, end_id, vocab_size);
     }
 
 } // tinycudallama
