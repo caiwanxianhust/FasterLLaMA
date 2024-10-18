@@ -102,7 +102,7 @@ namespace tinycudallama
         // int end_id_;
         int *finished_count_buf_;
         bool *h_finished_buf_;
-
+        // is initialized by [[0, 1, ..., vocab_size-1], [0, 1, ..., vocab_size-1], ..., [0, 1, ..., vocab_size-1]]
         int *topp_id_vals_buf_;
         float *topp_sorted_log_prob_buf_;
         int *topp_sorted_id_vals_buf_;
@@ -431,7 +431,7 @@ namespace tinycudallama
                 if (args_.candidate_num_ != 0)
                 {
                     // top k sampling
-                    // step_logits_buf_ = logits_buf[:, -1, :]，and Set the logits component corresponding to end_id to the maximum value
+                    // step_logits_buf_ = logits_buf[:, -1, :]，and set the logits component corresponding to end_id to the maximum value
                     launchUpdateLogitsWithoutSoftmax(step_logits_buf_, logits_buf_, args_.end_id_, finished_buf_, args_.batch_size_,
                                                      cur_seq_len, args_.vocab_size_, decoding_params.stream);
                     launchTopKSamplingKernel(step_logits_buf_, topk_ids_buf_, topk_val_buf_,
@@ -444,21 +444,16 @@ namespace tinycudallama
                 else if (args_.probability_threshold_ != 0.0)
                 {
                     // top p sampling
-                    // step_logits_buf_ = logits_buf[:, -1, :]，Set the logits component corresponding to end_id to the maximum value, softmax
+                    // step_logits_buf_ = logits_buf[:, -1, :]，set the logits component corresponding to end_id to the maximum value, softmax
                     launchUpdateLogitsKernelWithoutLog(step_logits_buf_, logits_buf_, finished_buf_, cur_seq_len, args_.end_id_,
                                                        args_.batch_size_, args_.vocab_size_, decoding_params.stream);
-                    topP_sampling_kernel_kernelLauncher(logits_buf_,
-                                                        topp_id_vals_buf_,
-                                                        topp_sorted_log_prob_buf_,
-                                                        topp_sorted_id_vals_buf_,
-                                                        topp_offset_buf_,
-                                                        temp_storage_,
-                                                        finished_buf_,
-                                                        step,
-                                                        args_,
-                                                        decoding_params.output_ids,
-                                                        decoding_params.sequence_length,
-                                                        decoding_params.stream);
+
+                    launchTopPSamplingKernel(step_logits_buf_, topp_id_vals_buf_, topp_sorted_log_prob_buf_, topp_sorted_id_vals_buf_,
+                                             topp_offset_buf_, temp_storage_, finished_buf_, decoding_params.prompt_tokens,
+                                             decoding_params.prompt_tokens_mask, cur_pos, max_prompt_seq_len,
+                                             cur_pos, // used as a random seed
+                                             decoding_params.output_ids + (step - 1) * args_.batch_size_, decoding_params.sequence_length,
+                                             args_.batch_size_, args_.vocab_size_, args_.probability_threshold_, decoding_params.stream);
                 }
             }
         }

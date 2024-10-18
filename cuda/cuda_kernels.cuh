@@ -1898,7 +1898,7 @@ namespace tinycudallama
                 }
 
                 sequence_length[threadIdx.x] = finished_buf[threadIdx.x] ? sequence_length[bid] : sequence_length[bid] + 1;
-                finished_buf[threadIdx.x] = ids[threadIdx.x] == end_id ? 1 : 0;
+                finished_buf[threadIdx.x] = ids[threadIdx.x] == end_id ? true : false;
             }
         }
     }
@@ -2039,6 +2039,117 @@ namespace tinycudallama
         dim3 block(min(vocab_size, 1024));
         /*n is the vocab_size, e.g., 30000, 7000.... vocab_size is usually very big. */
         updateLogitsKernelWithoutLog<<<grid, block, 0, stream>>>(step_logits, logits, finished, seq_len, end_id, vocab_size);
+    }
+
+    /**
+     * top-k Sampling kernel
+     * grid(1), block(batch_size)
+     */
+    template <typename T>
+    __global__ void topPSampling(const T *__restrict__ sorted_logits_probs, const int *__restrict__ sorted_id_vals,
+                                 int *__restrict__ ids, int *__restrict__ sequence_length, bool *__restrict__ finished_buf,
+                                 const int *__restrict__ prompt_tokens, const bool *__restrict__ prompt_tokens_mask,
+                                 const int cur_pos, const int max_prompt_seq_len, const int batch_size, const int vocab_size,
+                                 const int random_num, const float prob_threshold, const int end_id)
+    {
+        if (threadIdx.x < batch_size)
+        {
+            // prompt phase, next_token[:] = prompt_tokens[:, cur_pos]
+            if (prompt_tokens_mask[threadIdx.x * max_prompt_seq_len + cur_pos])
+            {
+                ids[threadIdx.x] = prompt_tokens[threadIdx.x * max_prompt_seq_len + cur_pos];
+            }
+            else
+            {
+                int tid = threadIdx.x;
+                curandState_t local_state;
+                curand_init(random_num, tid, 0, &local_state);
+                float rand_num = curand_uniform(&local_state) * prob_threshold;
+                ids[tid] = sorted_id_vals[vocab_size - 1];
+
+                for (int i = tid * vocab_size; i < tid * vocab_size + vocab_size; i++)
+                {
+                    rand_num = rand_num - sorted_logits_probs[i];
+                    if (rand_num <= 0)
+                    {
+                        ids[tid] = sorted_id_vals[i];
+                        break;
+                    }
+                }
+
+                sequence_length[tid] = finished_buf[tid] ? sequence_length[tid] : sequence_length[tid] + 1;
+                finished_buf[tid] = ids[tid] == end_id ? true : false;
+            }
+        }
+    }
+
+    /**
+     * Get the temporary memory buffer size of topp sort by calling the function: cub::DeviceSegmentedRadixSort::SortPairsDescending
+     */
+    size_t getToppSortTempStorageSize(const float *__restrict__ log_probs,
+                                      const int *__restrict__ id_vals,
+                                      float *__restrict__ sorted_log_probs,
+                                      int *__restrict__ sorted_id_vals,
+                                      int *__restrict__ topp_offset_buf,
+                                      const int batch_size,
+                                      const int vocab_size)
+    {
+        void *d_temp_storage = NULL;
+        size_t temp_storage_bytes = 0;
+
+        cub::DeviceSegmentedRadixSort::SortPairsDescending(d_temp_storage,
+                                                           temp_storage_bytes,
+                                                           log_probs,
+                                                           sorted_log_probs,
+                                                           id_vals,
+                                                           sorted_id_vals,
+                                                           vocab_size * batch_size,
+                                                           batch_size,
+                                                           topp_offset_buf, topp_offset_buf + 1);
+        return temp_storage_bytes;
+    }
+
+    template <typename T>
+    void launchTopPSamplingKernel(const T *__restrict__ logits_probs, const int *__restrict__ id_vals, T *__restrict__ sorted_logits_probs,
+                                  int *__restrict__ sorted_id_vals, const int *__restrict__ topp_offset_buf, void *__restrict__ temp_storage,
+                                  bool *__restrict__ finished_buf, const int *__restrict__ prompt_tokens,
+                                  const bool *__restrict__ prompt_tokens_mask, const int cur_pos, const int max_prompt_seq_len,
+                                  const int random_num, int *__restrict__ output_ids, int *__restrict__ sequence_length,
+                                  const int batch_size, const int vocab_size, const float probability_threshold, cudaStream_t stream = 0)
+    {
+
+        cub::DeviceSegmentedRadixSort::SortPairsDescending(temp_storage,
+                                                           temp_storage_size,
+                                                           logits_probs,
+                                                           sorted_logits_probs,
+                                                           id_vals,
+                                                           sorted_id_vals,
+                                                           vocab_size * batch_size,
+                                                           batch_size,
+                                                           topp_offset_buf, topp_offset_buf + 1);
+
+        int local_block_size;
+        assert(batch_size <= 1024);
+        if (batch_size <= 128)
+        {
+            local_block_size = 128
+        }
+        else if (batch_size <= 256)
+        {
+            local_block_size = 256;
+        }
+        else if (batch_size <= 512)
+        {
+            local_block_size = 512;
+        }
+        else
+        {
+            local_block_size = 1024;
+        }
+
+        topPSampling<<<1, local_block_size, 0, stream>>>(sorted_logits_probs, sorted_id_vals, output_ids, sequence_length,
+                                                         finished_buf, prompt_tokens, prompt_tokens_mask, cur_pos, max_prompt_seq_len,
+                                                         batch_size, vocab_size, random_num, probability_threshold, end_id);
     }
 
 } // tinycudallama
