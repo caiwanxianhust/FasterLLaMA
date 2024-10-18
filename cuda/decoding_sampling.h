@@ -89,27 +89,25 @@ namespace tinycudallama
         float **K_cache_;
         float **V_cache_;
         DataType_ *from_tensor_[2];
-        DataType_ *decoder_buf_;
+        void *decoder_buf_;
         DataType_ *decoder_normed_result_buf_;
         float *logits_buf_;
-        float *cum_log_buf_;
+        float *step_logits_buf_;
         int *word_ids_buf_;
         bool *finished_buf_;
         int *topk_ids_buf_;
         float *topk_val_buf_;
         void *buf_;
-        // int start_id_;
-        // int end_id_;
-        int *finished_count_buf_;
         bool *h_finished_buf_;
         // is initialized by [[0, 1, ..., vocab_size-1], [0, 1, ..., vocab_size-1], ..., [0, 1, ..., vocab_size-1]]
         int *topp_id_vals_buf_;
         float *topp_sorted_log_prob_buf_;
         int *topp_sorted_id_vals_buf_;
+        // is initialized by [0, vocab_size, ..., batch_size * vocab_size]
         int *topp_offset_buf_;
 
         void *temp_storage_;
-        // size_t temp_storage_size_;
+        size_t temp_storage_size_;
 
     public:
         DecodingSampling(const IAllocator &allocator, const int batch_size,
@@ -151,24 +149,22 @@ namespace tinycudallama
             K_cache_ = new float *[1];
             V_cache_ = new float *[1];
 
-            decoder_ = new OpenDecoder<OpType_>(batch_size, max_prompt_len,
-                                                max_gen_len, head_num, size_per_head);
+            decoder_ = new OpenDecoder<OpType_>(batch_size, max_prompt_len, max_gen_len, head_num, size_per_head);
 
             int from_tensor_size = args_.batch_size_ * args_.max_prompt_len_ * args_.hidden_units_;                  // type T
-            int decoder_workspace_size = decoder_->getWorkspaceSize();                                               // type T
-            int decoder_normed_result_buffer_size = args_.batch_size_ * args_.max_prompt_len_ * args_.hidden_units_; // type float
+            int decoder_workspace_size = decoder_->getWorkspaceSize();                                               
+            int decoder_normed_result_buffer_size = args_.batch_size_ * args_.max_prompt_len_ * args_.hidden_units_; // type T
             int cache_size = args_.batch_size_ * (args_.max_prompt_len_ + args_.max_gen_len_) * args_.hidden_units_; // type float
 
-            int logits_buf_size = args_.batch_size_ * args_.vocab_size_; // type float
-            int cum_log_buf_size = args_.batch_size_;                    // type float
+            int logits_buf_size = args_.batch_size_ * args_.max_prompt_len_ * args_.vocab_size_; // type float
+            int step_logits_buf_size = args_.batch_size_ * args_.vocab_size_; // type float
             int word_ids_buf_size = args_.batch_size_;                   // type int
             int finished_buf_size = args_.batch_size_;                   // type bool
-            int finished_count_size = (int)(ceil(1 / 32.)) * 32;         // type int
 
             int topk_ids_buf_size = args_.batch_size_ * args_.candidate_num_; // type int
             int topk_val_buf_size = args_.batch_size_ * args_.candidate_num_; // type float
             int topp_id_vals_buf_size = args_.batch_size_ * args_.vocab_size_;
-            int topp_sorted_log_prob_buf_size = args_.batch_size_ * args_.vocab_size_;
+            int topp_sorted_logits_prob_buf_size = args_.batch_size_ * args_.vocab_size_;
             int topp_sorted_id_vals_buf_size = args_.batch_size_ * args_.vocab_size_;
 
             // prevent memory misalinged address
@@ -342,6 +338,7 @@ namespace tinycudallama
             for (int cur_pos = min_prompt_seq_len; cur_pos < total_seq_len; ++cur_pos)
             {
                 int cur_seq_len = cur_pos - prev_pos;
+                int step = cur_pos - min_prompt_seq_len + 1;
 
                 /**
                  * Embedding Lookup
@@ -453,6 +450,24 @@ namespace tinycudallama
                                              decoding_params.output_ids + (step - 1) * args_.batch_size_, decoding_params.sequence_length,
                                              args_.batch_size_, args_.vocab_size_, args_.probability_threshold_, decoding_params.stream);
                 }
+
+                word_ids_buf_ = decoding_params.output_ids + (step - 1) * args_.batch_size_;
+
+#ifndef NDEBUG
+                cudaDeviceSynchronize();
+                check_cuda_error(cudaGetLastError());
+#endif
+
+                // TODO
+                // Find a better method to check the is_finished
+                cudaMemcpy(h_finished_buf_, finished_buf_, sizeof(bool) * args_.batch_size_, cudaMemcpyDeviceToHost);
+                int sum = 0;
+                for (int i = 0; i < args_.batch_size_; i++)
+                {
+                    sum += h_finished_buf_[i] ? 1 : 0;
+                }
+                if (sum == args_.batch_size_)
+                    break;
             }
         }
 

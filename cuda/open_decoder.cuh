@@ -107,7 +107,7 @@ namespace tinycudallama
                                                        size_per_head_(size_per_head)
         {
 #ifndef NDEBUG
-    PRINT_FUNC_NAME_();
+            PRINT_FUNC_NAME_();
 #endif
             hidden_units_ = head_num_ * size_per_head_;
             total_len_ = max_prompt_len_ + max_gen_len_;
@@ -117,10 +117,10 @@ namespace tinycudallama
             }
         }
 
-        void initialize(DecoderInitParam<DataType_> param, char *buf)
+        void initialize(DecoderInitParam<DataType_> param, void *buf)
         {
 #ifndef NDEBUG
-    PRINT_FUNC_NAME_();
+            PRINT_FUNC_NAME_();
 #endif
             param_ = param;
             int buf_size = batch_size * max_prompt_len_ * head_num * size_per_head;
@@ -142,6 +142,16 @@ namespace tinycudallama
             check_cuda_error(cudaGetLastError());
 #endif
         }
+
+        int getWorkspaceSize()
+        {
+            int buf_size = batch_size_ * max_prompt_len_ * hidden_units_;
+            int work_space_size = sizeof(int8_t) * buf_size + sizeof(float) * 4 * buf_size + sizeof(int32_t) * 3 * buf_size +
+                                  sizeof(float) * 2 * batch_size_ * max_prompt_len_ + sizeof(DataType_) * buf_size +
+                                  sizeof(float) * batch_size_ * head_num_ * max_prompt_len_ * total_len_;
+            return work_space_size;
+        }
+
         /**
          * key_cache_ value_cache_: cache_size, [batch_size, head_num, total_len_, size_per_head]
          * freq_cis_: [max_prompt_len_, size_per_head]
@@ -150,7 +160,7 @@ namespace tinycudallama
                      DataType_ *decoder_output, const int start_pos, const int seq_len)
         {
 #ifndef NDEBUG
-    PRINT_FUNC_NAME_();
+            PRINT_FUNC_NAME_();
 #endif
             const AlphaBetaType_ alpha = 1;
             const AlphaBetaType_ beta = 0;
