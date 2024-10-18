@@ -1763,23 +1763,61 @@ namespace tinycudallama
     /**
      * decoding_params.sequence_length is initialized by 0
      * finished_buf_ is initialized by false
-     * cum_log_probs is initialized by 0
      */
-    __global__ void topKSamplingInitKernel(bool *__restrict__ finished, int *__restrict__ sequence_length,
-                                           float *__restrict__ cum_log_probs)
+    __global__ void topKSamplingInitKernel(bool *__restrict__ finished, int *__restrict__ sequence_length)
     {
         int tid = threadIdx.x;
         finished[tid] = false;
         sequence_length[tid] = 0;
-        cum_log_probs[tid] = 0.0f;
     }
 
     void launchTopKSamplingInitKernel(bool *__restrict__ finished, int *__restrict__ sequence_length,
-                                      float *__restrict__ cum_log_probs, const int batch_size, cudaStream_t stream = 0)
+                                      const int batch_size, cudaStream_t stream = 0)
     {
         dim3 grid(1);
         dim3 block(min(1024, batch_size));
-        topKSamplingInitKernel<<<grid, block, 0, stream>>>(finished, sequence_length, cum_log_probs);
+        topKSamplingInitKernel<<<grid, block, 0, stream>>>(finished, sequence_length);
+    }
+
+    /**
+     * decoding_params.sequence_length is initialized by 0
+     * finished_buf_ is initialized by false
+     * topp_offset_buf is initialized by [0, vocab_size, ..., batch_size * vocab_size]
+     * topp_id_val_buf is initialized by [[0, 1, ..., vocab_size-1], [0, 1, ..., vocab_size-1], ..., [0, 1, ..., vocab_size-1]]
+     */
+    __global__ void topPInitializationKernel(bool *__restrict__ finished, int *__restrict__ sequence_length,
+                                             int *__restrict__ topp_id_val_buf, int *__restrict__ topp_offset_buf,
+                                             const int batch_size, const int vocab_size)
+    {
+        int tid = threadIdx.x;
+        int bid = blockIdx.x;
+
+        if (bid == 0)
+        {
+            for (int i = tid; i < batch_size + 1; i += blockDim.x)
+            {
+                topp_offset_buf[i] = i * vocab_size;
+            }
+
+            for (int i = tid; i < batch_size; i += blockDim.x)
+            {
+                finished[i] = false;
+                sequence_length[i] = 0;
+            }
+        }
+
+        for (int idx = tid + bid * blockDim.x; idx < batch_size * vocab_size; idx += blockDim.x * gridDim.x)
+        {
+            topp_id_val_buf[idx] = idx % vocab_size;
+        }
+    }
+
+    void launchTopPInitializationKernel(bool *__restrict__ finished, int *__restrict__ sequence_length,
+                                        int *__restrict__ topp_id_val_buf, int *__restrict__ topp_offset_buf,
+                                        const int batch_size, const int vocab_size, cudaStream_t stream = 0)
+    {
+        topPInitializationKernel<<<32, 512, 0, stream>>>(finished, sequence_length, topp_id_val_buf, topp_offset_buf,
+                                                         batch_size, vocab_size);
     }
 
     template <typename T>

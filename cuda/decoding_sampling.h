@@ -292,26 +292,24 @@ namespace tinycudallama
             PRINT_FUNC_NAME_();
 #endif
 
-            /*
-              sequence_length initialize to 0
-              finished: false
-              cum_log_buf_: useless, keep it to reuse the kernel of decoding_opennmt.h
-            */
-
             if (args_.candidate_num_ != 0)
             {
-                launchTopKSamplingInitKernel(finished_buf_, decoding_params.sequence_length, cum_log_buf_,
-                                             args_.batch_size_, decoding_params.stream)
+                /**
+                 * decoding_params.sequence_length is initialized by 0
+                 * finished_buf_ is initialized by false
+                 */
+                launchTopKSamplingInitKernel(finished_buf_, decoding_params.sequence_length, args_.batch_size_, decoding_params.stream);
             }
             else if (args_.probability_threshold_ != 0.0)
             {
-                topp_initialization_kernelLauncher(finished_buf_,
-                                                   decoding_params.sequence_length,
-                                                   word_ids_buf_,
-                                                   topp_id_vals_buf_,
-                                                   topp_offset_buf_,
-                                                   args_,
-                                                   decoding_params.stream);
+                /**
+                 * decoding_params.sequence_length is initialized by 0
+                 * finished_buf_ is initialized by false
+                 * topp_offset_buf is initialized by [0, vocab_size, ..., batch_size * vocab_size]
+                 * topp_id_val_buf is initialized by [[0, 1, ..., vocab_size-1], [0, 1, ..., vocab_size-1], ..., [0, 1, ..., vocab_size-1]]
+                 */
+                launchTopPInitializationKernel(finished_buf_, decoding_params.sequence_length, topp_id_vals_buf_, topp_offset_buf_,
+                                               args_.batch_size_, args_.vocab_size_, decoding_params.stream);
             }
 
 #ifndef NDEBUG
