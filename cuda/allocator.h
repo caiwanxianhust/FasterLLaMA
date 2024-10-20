@@ -1,5 +1,4 @@
-#ifndef ALLOCATOR_H
-#define ALLOCATOR_H
+#pragma once
 
 #include "common.h"
 #include <vector>
@@ -30,22 +29,20 @@ public:
   {
     void *ptr = nullptr;
     int o_device = 0;
-    check_cuda_error(get_set_device(device_id_, &o_device));
-    check_cuda_error(cudaMalloc(&ptr, size));
-    check_cuda_error(get_set_device(o_device));
+    CHECK_CUDA_ERROR(get_set_device(device_id_, &o_device));
+    CHECK_CUDA_ERROR(cudaMalloc(&ptr, size));
+    CHECK_CUDA_ERROR(get_set_device(o_device));
     return ptr;
   }
 
   void free(void *ptr) const
   {
     int o_device = 0;
-    check_cuda_error(get_set_device(device_id_, &o_device));
-    check_cuda_error(cudaFree(ptr));
-    check_cuda_error(get_set_device(o_device));
+    CHECK_CUDA_ERROR(get_set_device(device_id_, &o_device));
+    CHECK_CUDA_ERROR(cudaFree(ptr));
+    CHECK_CUDA_ERROR(get_set_device(o_device));
     return;
   }
 };
 
 } //namespace tinycudallama
-
-#endif

@@ -5,6 +5,9 @@
         "cmath": "cpp",
         "ios": "cpp",
         "type_traits": "cpp",
-        "*.tcc": "cpp"
+        "*.tcc": "cpp",
+        "bitset": "cpp",
+        "atomic": "cpp",
+        "cstdint": "cpp"
     }
 }

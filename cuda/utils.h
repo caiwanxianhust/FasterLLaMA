@@ -1,5 +1,4 @@
-#ifndef UTILS_H
-#define UTILS_H
+#pragma once
 
 #include "common.h"
 #include <cuda_runtime.h>
@@ -51,5 +50,3 @@ namespace tinycudallama
   }
 
 } // namespace tinycudallama
-
-#endif

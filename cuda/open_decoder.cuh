@@ -1,4 +1,6 @@
-#include "cuda_kernels.cuh"
+#pragma once
+
+#include "decoder_kernels.cuh"
 
 namespace tinycudallama
 {

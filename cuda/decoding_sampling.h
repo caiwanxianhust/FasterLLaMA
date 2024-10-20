@@ -1,7 +1,7 @@
-#ifndef DECODING_SAMPLING_H
-#define DECODING_SAMPLING_H
+#pragma once
 
 #include "open_decoder.cuh"
+#include "decoding_kernels.cuh"
 
 namespace tinycudallama
 {
@@ -151,21 +151,23 @@ namespace tinycudallama
 
             decoder_ = new OpenDecoder<OpType_>(batch_size, max_prompt_len, max_gen_len, head_num, size_per_head);
 
-            int from_tensor_size = args_.batch_size_ * args_.max_prompt_len_ * args_.hidden_units_;                  // type T
-            int decoder_workspace_size = decoder_->getWorkspaceSize();                                               
+            int from_tensor_size = args_.batch_size_ * args_.max_prompt_len_ * args_.hidden_units_; // type T
+            int decoder_workspace_size = decoder_->getWorkspaceSize();
             int decoder_normed_result_buffer_size = args_.batch_size_ * args_.max_prompt_len_ * args_.hidden_units_; // type T
             int cache_size = args_.batch_size_ * (args_.max_prompt_len_ + args_.max_gen_len_) * args_.hidden_units_; // type float
 
             int logits_buf_size = args_.batch_size_ * args_.max_prompt_len_ * args_.vocab_size_; // type float
-            int step_logits_buf_size = args_.batch_size_ * args_.vocab_size_; // type float
-            int word_ids_buf_size = args_.batch_size_;                   // type int
-            int finished_buf_size = args_.batch_size_;                   // type bool
+            int step_logits_buf_size = args_.batch_size_ * args_.vocab_size_;                    // type float
+            int word_ids_buf_size = args_.batch_size_;                                           // type int
+            int finished_buf_size = args_.batch_size_;                                           // type bool
 
             int topk_ids_buf_size = args_.batch_size_ * args_.candidate_num_; // type int
             int topk_val_buf_size = args_.batch_size_ * args_.candidate_num_; // type float
             int topp_id_vals_buf_size = args_.batch_size_ * args_.vocab_size_;
             int topp_sorted_logits_prob_buf_size = args_.batch_size_ * args_.vocab_size_;
             int topp_sorted_id_vals_buf_size = args_.batch_size_ * args_.vocab_size_;
+
+
 
             // prevent memory misalinged address
             logits_buf_size = (int)(ceil(logits_buf_size / 4.)) * 4;
@@ -483,4 +485,4 @@ namespace tinycudallama
         }
     }
 
-#endif
+} // namespace tinycudallama
