@@ -107,7 +107,6 @@ namespace tinycudallama
         int *topp_offset_buf_;
 
         void *temp_storage_;
-        // size_t temp_storage_size_;
 
     public:
         DecodingSampling(const IAllocator &allocator, const int batch_size,
@@ -185,11 +184,8 @@ namespace tinycudallama
             topp_offset_buf_size = (int)(ceil(topp_offset_buf_size / 4.)) * 4;
 
             int datatype_buf_size = from_tensor_size * 2 + decoder_normed_result_buf_size;
-            // int datatype_buf_size = from_tensor_size * 2 + decoder_workspace_size +
-            //                 (cache_size * 4 + mem_cache_size * 2) * args_.decoder_layers_ + decoder_normed_result_buffer_size;
             int float_buf_size = cache_size * 2 * args_.decoder_layers_ + logits_buf_size + step_logits_buf_size + topk_val_buf_size +
                                  topp_sorted_logits_prob_buf_size;
-
             int int_buf_size = word_ids_buf_size + topk_ids_buf_size + topp_id_vals_buf_size + topp_sorted_id_vals_buf_size +
                                topp_offset_buf_size;
 
