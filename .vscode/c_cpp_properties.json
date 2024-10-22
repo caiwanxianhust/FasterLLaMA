@@ -7,10 +7,9 @@
                 "/usr/local/cuda-11.7/include/**"
             ],
             "defines": [],
-            "cStandard": "c17",
-            "cppStandard": "gnu++14",
-            "intelliSenseMode": "linux-gcc-x64",
-            "compilerPath": "/usr/bin/g++-9"
+            "cStandard": "c11",
+            "cppStandard": "c++11",
+            "intelliSenseMode": "linux-gcc-x64"
         }
     ],
     "version": 4

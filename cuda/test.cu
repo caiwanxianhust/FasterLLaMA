@@ -1,4 +1,6 @@
-#include "cuda_kernels.cuh"
+
+#include "open_decoder.cuh"
+#include "allocator.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -56,6 +58,8 @@ __global__ void convertMatfloat2half(const float *input, half *output, const int
         output[i] = __float2half(input[i]);
     }
 }
+
+/*
 
 template <typename DataType>
 void timingResNorm(DataType *output, const DataType *input, const DataType *gamma, const float eps, const int m, const int n,
@@ -318,7 +322,7 @@ void testQKRoteEmbeddingQuantizedTranspose()
 
     tinycudallama::launchQKRoteEmbeddingQuantizedTranspose(d_q_out, d_k_out, d_q, d_k, d_q_inp_scale, d_k_inp_scale,
                                                            d_q_weight_scale, d_k_weight_scale, d_q_out_scale, d_k_out_scale,
-                                                           d_freq_cis, batch_size, seq_len, head_num, size_per_head);
+                                                           d_freq_cis, batch_size, seq_len, 0, seq_len, head_num, size_per_head);
 
     CHECK_CUDA_ERROR(cudaMemcpy(h_q_out_scale, d_q_out_scale, sizeof(float) * batch_size * seq_len * head_num, cudaMemcpyDeviceToHost));
     printVecInVec(h_q_out_scale, 1, batch_size * seq_len * head_num, 1, 32, "h_q_out_scale");
@@ -390,7 +394,6 @@ void testStorecache()
     delete[] h_k_cache;
 }
 
-
 void testSoftmax()
 {
     const int batch_size = 4;
@@ -422,20 +425,24 @@ void testSoftmax()
     printVecInVec(k_inp_scale, batch_size * head_num, seq_len_k, 1, 10, "k_inp_scale");
 
     float *attn_mask = new float[max_seq_len * max_seq_len];
-    for (int i=0; i<max_seq_len; ++i) {
-        for (int j=0; j<max_seq_len; ++j) {
-            if (j > i) attn_mask[i * max_seq_len + j] = -1e5f;
-            else attn_mask[i * max_seq_len + j] = 0.0f;
+    for (int i = 0; i < max_seq_len; ++i)
+    {
+        for (int j = 0; j < max_seq_len; ++j)
+        {
+            if (j > i)
+                attn_mask[i * max_seq_len + j] = -1e5f;
+            else
+                attn_mask[i * max_seq_len + j] = 0.0f;
         }
     }
     printVecInVec(attn_mask, max_seq_len, max_seq_len, 10, 10, "attn_mask");
 
-    int mem_size = sizeof(int32_t) * num_elements + 
-                    sizeof(float) * (batch_size * head_num * seq_len_q) + 
-                    sizeof(float) * (batch_size * head_num * seq_len_k) +
-                    sizeof(float) * (max_seq_len * max_seq_len) + 
-                    sizeof(float) * (batch_size * head_num * seq_len_q) +
-                    sizeof(int8_t) * num_elements;
+    int mem_size = sizeof(int32_t) * num_elements +
+                   sizeof(float) * (batch_size * head_num * seq_len_q) +
+                   sizeof(float) * (batch_size * head_num * seq_len_k) +
+                   sizeof(float) * (max_seq_len * max_seq_len) +
+                   sizeof(float) * (batch_size * head_num * seq_len_q) +
+                   sizeof(int8_t) * num_elements;
 
     int32_t *d_qk;
     float *d_q_inp_scale;
@@ -459,8 +466,8 @@ void testSoftmax()
     CHECK_CUDA_ERROR(cudaMemcpy(d_k_inp_scale, k_inp_scale, sizeof(float) * batch_size * head_num * seq_len_k, cudaMemcpyHostToDevice));
     CHECK_CUDA_ERROR(cudaMemcpy(d_attn_mask, attn_mask, sizeof(float) * max_seq_len * max_seq_len, cudaMemcpyHostToDevice));
 
-    tinycudallama::launchBlockSoftmaxKernel(d_score, d_qk, d_attn_mask, d_q_inp_scale, d_k_inp_scale, d_score_scale, rsqrtf((float)seq_len_k), 
-        batch_size, head_num, seq_len_q, seq_len_k, max_seq_len);
+    tinycudallama::launchBlockSoftmaxKernel(d_score, d_qk, d_attn_mask, d_q_inp_scale, d_k_inp_scale, d_score_scale, rsqrtf((float)seq_len_k),
+                                            batch_size, head_num, seq_len_q, seq_len_k, max_seq_len);
 
     CHECK_CUDA_ERROR(cudaMemcpy(h_score_scale, d_score_scale, sizeof(float) * batch_size * head_num * seq_len_q, cudaMemcpyDeviceToHost));
     printVecInVec(h_score_scale, batch_size * head_num, seq_len_q, 1, 10, "h_score_scale");
@@ -476,8 +483,6 @@ void testSoftmax()
 
     CHECK_CUDA_ERROR(cudaFree(d_qk));
 }
-
-
 
 void testDequantizedVTransposeQuantized()
 {
@@ -530,7 +535,7 @@ void testDequantizedVTransposeQuantized()
     CHECK_CUDA_ERROR(cudaMemcpy(d_v, v, sizeof(int32_t) * num_elements, cudaMemcpyHostToDevice));
     CHECK_CUDA_ERROR(cudaMemcpy(d_v_inp_scale, v_inp_scale, sizeof(float) * batch_size * seq_len, cudaMemcpyHostToDevice));
     CHECK_CUDA_ERROR(cudaMemcpy(d_v_weight_scale, v_weight_scale, sizeof(float) * hidden_units, cudaMemcpyHostToDevice));
-    
+
     tinycudallama::launchDequantizedVTransposeKernel(d_v_fp32_buf, d_v, d_v_inp_scale, d_v_weight_scale, batch_size, seq_len, head_num, size_per_head);
     tinycudallama::launchBlockVQuantizedKernel(d_v_out, d_v_fp32_buf, d_v_out_scale, batch_size, seq_len, head_num, size_per_head);
 
@@ -636,10 +641,10 @@ void testDequantizedAttnQuantizedTranspose()
     float *d_attn_out_scale;
     int8_t *d_attn_out;
 
-    int mem_size = sizeof(int32_t) * num_elements + sizeof(float) * batch_size * head_num * seq_len + 
-        sizeof(float) * batch_size * head_num * size_per_head + sizeof(float) * batch_size * seq_len + 
-        sizeof(int8_t) * num_elements;
-    
+    int mem_size = sizeof(int32_t) * num_elements + sizeof(float) * batch_size * head_num * seq_len +
+                   sizeof(float) * batch_size * head_num * size_per_head + sizeof(float) * batch_size * seq_len +
+                   sizeof(int8_t) * num_elements;
+
     device_malloc(&d_attn, mem_size);
     d_score_scale = (float *)(d_attn + num_elements);
     d_v_scale = (float *)(d_score_scale + batch_size * head_num * seq_len);
@@ -650,8 +655,8 @@ void testDequantizedAttnQuantizedTranspose()
     CHECK_CUDA_ERROR(cudaMemcpy(d_score_scale, h_score_scale, sizeof(float) * batch_size * head_num * seq_len, cudaMemcpyHostToDevice));
     CHECK_CUDA_ERROR(cudaMemcpy(d_v_scale, h_v_scale, sizeof(float) * batch_size * head_num * size_per_head, cudaMemcpyHostToDevice));
 
-    tinycudallama::launchDequantizedAttnQuantizedTransposeKernel(d_attn_out, d_attn, d_score_scale, d_v_scale, d_attn_out_scale, 
-        batch_size, head_num, seq_len, size_per_head);
+    tinycudallama::launchDequantizedAttnQuantizedTransposeKernel(d_attn_out, d_attn, d_score_scale, d_v_scale, d_attn_out_scale,
+                                                                 batch_size, head_num, seq_len, size_per_head);
 
     float *h_attn_out_scale = new float[batch_size * seq_len];
     int8_t *h_attn_out = new int8_t[num_elements];
@@ -671,7 +676,6 @@ void testDequantizedAttnQuantizedTranspose()
     CHECK_CUDA_ERROR(cudaFree(d_attn));
 }
 
-
 void testDequantizedResidualResNormQuantized()
 {
     const int rows = 16;
@@ -681,14 +685,14 @@ void testDequantizedResidualResNormQuantized()
     int32_t *h_attn = new int32_t[num_elements];
     for (int i = 0; i < num_elements; ++i)
     {
-        h_attn[i] = (i % 2 == 0) ? (i%70) : (-2 * (i%60) + 1);
+        h_attn[i] = (i % 2 == 0) ? (i % 70) : (-2 * (i % 60) + 1);
     }
     printVecInVec(h_attn, rows, hidden_units, 2, 10, "h_attn");
 
     float *h_from_tensor = new float[num_elements];
     for (int i = 0; i < num_elements; ++i)
     {
-        h_from_tensor[i] = (i % 2 == 0) ? (i%80) : (-3.5 * (i%70) + 1);
+        h_from_tensor[i] = (i % 2 == 0) ? (i % 80) : (-3.5 * (i % 70) + 1);
     }
     printVecInVec(h_from_tensor, rows, hidden_units, 2, 10, "h_from_tensor");
 
@@ -719,10 +723,10 @@ void testDequantizedResidualResNormQuantized()
     float *d_gamma;
     float *d_ffn_tensor;
 
-    int mem_size = sizeof(int32_t) * num_elements + sizeof(float) * num_elements + 
-        sizeof(float) * rows + sizeof(float) * hidden_units + sizeof(float) * rows + sizeof(float) * hidden_units +
-        sizeof(int8_t) * num_elements + sizeof(float) * num_elements;
-    
+    int mem_size = sizeof(int32_t) * num_elements + sizeof(float) * num_elements +
+                   sizeof(float) * rows + sizeof(float) * hidden_units + sizeof(float) * rows + sizeof(float) * hidden_units +
+                   sizeof(int8_t) * num_elements + sizeof(float) * num_elements;
+
     device_malloc(&d_attn, mem_size);
     d_from_tensor = (float *)(d_attn + num_elements);
     d_attn_scale = (float *)(d_from_tensor + num_elements);
@@ -737,9 +741,9 @@ void testDequantizedResidualResNormQuantized()
     CHECK_CUDA_ERROR(cudaMemcpy(d_attn_scale, h_attn_scale, sizeof(float) * rows, cudaMemcpyHostToDevice));
     CHECK_CUDA_ERROR(cudaMemcpy(d_weight_scale, h_weight_scale, sizeof(float) * hidden_units, cudaMemcpyHostToDevice));
     CHECK_CUDA_ERROR(cudaMemcpy(d_gamma, h_gamma, sizeof(float) * hidden_units, cudaMemcpyHostToDevice));
-    
-    tinycudallama::launchDequantizedResidualResNormQuantized<float>(d_norm_out, d_ffn_tensor, d_from_tensor, d_attn, d_attn_scale, 
-        d_weight_scale, d_gamma, d_norm_scale, 1e-5f, rows, hidden_units);
+
+    tinycudallama::launchDequantizedResidualResNormQuantized<float>(d_norm_out, d_ffn_tensor, d_from_tensor, d_attn, d_attn_scale,
+                                                                    d_weight_scale, d_gamma, d_norm_scale, 1e-5f, rows, hidden_units);
 
     float *h_norm_scale = new float[rows];
     int8_t *h_norm_out = new int8_t[num_elements];
@@ -754,7 +758,6 @@ void testDequantizedResidualResNormQuantized()
     CHECK_CUDA_ERROR(cudaMemcpy(h_ffn_tensor, d_ffn_tensor, sizeof(float) * num_elements, cudaMemcpyDeviceToHost));
     printVecInVec(h_ffn_tensor, rows, hidden_units, 10, 10, "h_ffn_tensor");
 
-
     half *d_from_tensor_half;
     half *d_gamma_half;
     half *d_ffn_tensor_half;
@@ -765,8 +768,8 @@ void testDequantizedResidualResNormQuantized()
     convertMatfloat2half<<<rows, 128>>>(d_from_tensor, d_from_tensor_half, num_elements);
     convertMatfloat2half<<<1, 128>>>(d_gamma, d_gamma_half, hidden_units);
 
-    tinycudallama::launchDequantizedResidualResNormQuantized(d_norm_out, d_ffn_tensor_half, d_from_tensor_half, d_attn, d_attn_scale, 
-        d_weight_scale, d_gamma_half, d_norm_scale, 1e-5f, rows, hidden_units);
+    tinycudallama::launchDequantizedResidualResNormQuantized(d_norm_out, d_ffn_tensor_half, d_from_tensor_half, d_attn, d_attn_scale,
+                                                             d_weight_scale, d_gamma_half, d_norm_scale, 1e-5f, rows, hidden_units);
 
     CHECK_CUDA_ERROR(cudaMemcpy(h_norm_scale, d_norm_scale, sizeof(float) * rows, cudaMemcpyDeviceToHost));
     printVecInVec(h_norm_scale, 1, rows, 1, rows, "h_norm_scale_half");
@@ -862,17 +865,15 @@ void testResNormQuantized()
     CHECK_CUDA_ERROR(cudaMemcpy(h_norm_out_half, d_out_half, sizeof(int8_t) * num_elements, cudaMemcpyDeviceToHost));
     printVecInVec(h_norm_out_half, rows, hidden_units, 10, 10, "h_norm_out_half");
 
-    
     CHECK_CUDA_ERROR(cudaFree(d_inp));
     CHECK_CUDA_ERROR(cudaFree(d_inp_half));
-    
+
     delete[] h_inp;
     delete[] h_gamma;
     delete[] h_norm_out;
     delete[] h_norm_scale;
     delete[] h_norm_out_half;
     delete[] h_norm_scale_half;
-
 }
 
 void testDequantizedSiluMultifyQuantized()
@@ -884,14 +885,14 @@ void testDequantizedSiluMultifyQuantized()
     int32_t *h_w1_ret = new int32_t[num_elements];
     for (int i = 0; i < num_elements; ++i)
     {
-        h_w1_ret[i] = (i % 2 == 0) ? (i%70) : (-2 * (i%60) + 1);
+        h_w1_ret[i] = (i % 2 == 0) ? (i % 70) : (-2 * (i % 60) + 1);
     }
     printVecInVec(h_w1_ret, rows, hidden_units, 2, 10, "h_w1_ret");
 
     int32_t *h_w3_ret = new int32_t[num_elements];
     for (int i = 0; i < num_elements; ++i)
     {
-        h_w3_ret[i] = (i % 2 == 0) ? (i%80) : (-3.5 * (i%70) + 1);
+        h_w3_ret[i] = (i % 2 == 0) ? (i % 80) : (-3.5 * (i % 70) + 1);
     }
     printVecInVec(h_w3_ret, rows, hidden_units, 2, 10, "h_w3_ret");
 
@@ -939,8 +940,8 @@ void testDequantizedSiluMultifyQuantized()
     CHECK_CUDA_ERROR(cudaMemcpy(d_w1_weight_scale, h_w1_weight_scale, sizeof(float) * hidden_units, cudaMemcpyHostToDevice));
     CHECK_CUDA_ERROR(cudaMemcpy(d_w3_weight_scale, h_w3_weight_scale, sizeof(float) * hidden_units, cudaMemcpyHostToDevice));
 
-    tinycudallama::launchDequantizedSiluMultifyQuantized(d_out, d_w1_ret, d_norm_scale, d_w1_weight_scale, d_w3_ret, d_w3_weight_scale, 
-        d_out_scale, rows, hidden_units);
+    tinycudallama::launchDequantizedSiluMultifyQuantized(d_out, d_w1_ret, d_norm_scale, d_w1_weight_scale, d_w3_ret, d_w3_weight_scale,
+                                                         d_out_scale, rows, hidden_units);
 
     float *h_out_scale = new float[rows];
     int8_t *h_out = new int8_t[num_elements];
@@ -971,14 +972,14 @@ void testDequantizedResidual()
     int32_t *h_inp = new int32_t[num_elements];
     for (int i = 0; i < num_elements; ++i)
     {
-        h_inp[i] = (i % 2 == 0) ? (i%70) : (-2 * (i%60) + 1);
+        h_inp[i] = (i % 2 == 0) ? (i % 70) : (-2 * (i % 60) + 1);
     }
     printVecInVec(h_inp, rows, hidden_units, 2, 10, "h_inp");
 
     float *h_from_tensor = new float[num_elements];
     for (int i = 0; i < num_elements; ++i)
     {
-        h_from_tensor[i] = (i % 2 == 0) ? (i%80) : (-3.5 * (i%70) + 1);
+        h_from_tensor[i] = (i % 2 == 0) ? (i % 80) : (-3.5 * (i % 70) + 1);
     }
     printVecInVec(h_from_tensor, rows, hidden_units, 2, 10, "h_from_tensor");
 
@@ -1000,20 +1001,20 @@ void testDequantizedResidual()
     float *d_weight_scale;
     float *d_out;
 
-    int mem_size = sizeof(int32_t) * num_elements + sizeof(float) * num_elements + 
-        sizeof(float) * rows + sizeof(float) * hidden_units + sizeof(float) * num_elements;
-    
+    int mem_size = sizeof(int32_t) * num_elements + sizeof(float) * num_elements +
+                   sizeof(float) * rows + sizeof(float) * hidden_units + sizeof(float) * num_elements;
+
     device_malloc(&d_inp, mem_size);
     d_from_tensor = (float *)(d_inp + num_elements);
     d_inp_scale = (float *)(d_from_tensor + num_elements);
     d_weight_scale = (float *)(d_inp_scale + rows);
     d_out = (float *)(d_weight_scale + hidden_units);
-    
+
     CHECK_CUDA_ERROR(cudaMemcpy(d_inp, h_inp, sizeof(int32_t) * num_elements, cudaMemcpyHostToDevice));
     CHECK_CUDA_ERROR(cudaMemcpy(d_from_tensor, h_from_tensor, sizeof(float) * num_elements, cudaMemcpyHostToDevice));
     CHECK_CUDA_ERROR(cudaMemcpy(d_inp_scale, h_inp_scale, sizeof(float) * rows, cudaMemcpyHostToDevice));
     CHECK_CUDA_ERROR(cudaMemcpy(d_weight_scale, h_weight_scale, sizeof(float) * hidden_units, cudaMemcpyHostToDevice));
-    
+
     tinycudallama::launchDequantizedResidual<float>(d_out, d_from_tensor, d_inp, d_inp_scale, d_weight_scale, rows, hidden_units);
 
     float *h_out = new float[num_elements];
@@ -1059,14 +1060,14 @@ void testCopyKVFromCache()
     int8_t *h_k_cache = new int8_t[num_elements];
     for (int i = 0; i < num_elements; ++i)
     {
-        h_k_cache[i] = (i % 2 == 0) ? (i%70) : (-2 * (i%60) + 1);
+        h_k_cache[i] = (i % 2 == 0) ? (i % 70) : (-2 * (i % 60) + 1);
     }
     printVecInVec(h_k_cache, batch_size * head_num * max_seq_len, size_per_head, 10, 10, "h_k_cache");
 
     int8_t *h_v_cache = new int8_t[num_elements];
     for (int i = 0; i < num_elements; ++i)
     {
-        h_v_cache[i] = (i % 2 == 0) ? (i%60) : (-2 * (i%50) + 1);
+        h_v_cache[i] = (i % 2 == 0) ? (i % 60) : (-2 * (i % 50) + 1);
     }
     printVecInVec(h_v_cache, batch_size * head_num * max_seq_len, size_per_head, 10, 10, "h_v_cache");
 
@@ -1093,13 +1094,119 @@ void testCopyKVFromCache()
     CHECK_CUDA_ERROR(cudaMemcpy(h_v_buf, d_v_buf, sizeof(int8_t) * batch_size * head_num * seq_len * size_per_head, cudaMemcpyDeviceToHost));
     printVecInVec(h_v_buf, batch_size * head_num * seq_len, size_per_head, 10, 10, "h_v_buf");
 
-
     delete[] h_k_cache;
     delete[] h_k_buf;
     delete[] h_v_cache;
     delete[] h_v_buf;
 
     CHECK_CUDA_ERROR(cudaFree(d_k_cache));
+}
+
+*/
+
+template <typename T>
+__global__ void initAttnMaskKernel(T *attn_mask, const int length)
+{
+    int row = blockIdx.x;
+    for (int tid = threadIdx.x; tid < length; tid += blockDim.x)
+    {
+        attn_mask[row * length + tid] = (row > tid) ? 0.0f : (T)(-1 * FLT_MAX);
+    }
+}
+
+void testOpendecoder()
+{
+
+    int batch_size = 32;
+    int max_prompt_len = 1024;
+    int max_gen_len = 1024;
+    int head_num = 32;
+    int size_per_head = 128;
+    const int decoder_layers = 8;
+    int hidden_units = head_num * size_per_head;
+    int ffn_hidden_units = 4096 * 4;
+    int total_len = max_prompt_len + max_gen_len;
+
+    const tinycudallama::OperationType type = tinycudallama::OperationType::FP32;
+    tinycudallama::OpenDecoder<type> *decoder = new tinycudallama::OpenDecoder<type>(batch_size,
+                                                                                     max_prompt_len,
+                                                                                     max_gen_len,
+                                                                                     head_num,
+                                                                                     size_per_head);
+
+    cublasHandle_t cublasHandle;
+    CHECK_CUBLAS_STATUS(cublasCreate(&cublasHandle));
+
+    cudaStream_t stream;
+    CHECK_CUDA_ERROR(cudaStreamCreate(&stream));
+    CHECK_CUBLAS_STATUS(cublasSetStream(cublasHandle, stream));
+
+    tinycudallama::Allocator<tinycudallama::AllocatorType::CUDA> allocator(0);
+    tinycudallama::DecoderInitParam<float> *param = new tinycudallama::DecoderInitParam<float>[decoder_layers];
+
+    int decoder_workspace_size = decoder->getWorkspaceSize();
+    char *decoder_buf;
+    device_malloc(&decoder_buf, decoder_workspace_size);
+
+    for (int i = 0; i < decoder_layers; i++)
+    {
+        param[i].stream = stream;
+        param[i].cublas_handle = cublasHandle;
+
+        float *d_attn_resnorm_gamma;
+        float *d_self_Q_kernel, *d_self_K_kernel, *d_self_V_kernel, *d_self_output_kernel;
+        float *d_self_Q_kernel_scale, *d_self_K_kernel_scale, *d_self_V_kernel_scale, *d_self_output_kernel_scale;
+        float *d_attn_mask; // [total_len, total_len]
+        float *d_ffn_resnorm_gamma;
+        float *d_ffn_kernel1, *d_ffn_kernel1_scale, *d_ffn_kernel2, *d_ffn_kernel2_scale, *d_ffn_kernel3, *d_ffn_kernel3_scale;
+
+        device_malloc(&d_attn_resnorm_gamma, hidden_units);
+
+        device_malloc(&d_self_Q_kernel, hidden_units * hidden_units);
+        device_malloc(&d_self_K_kernel, hidden_units * hidden_units);
+        device_malloc(&d_self_V_kernel, hidden_units * hidden_units);
+        device_malloc(&d_self_output_kernel, hidden_units * hidden_units);
+        device_malloc(&d_self_Q_kernel_scale, hidden_units);
+        device_malloc(&d_self_K_kernel_scale, hidden_units);
+        device_malloc(&d_self_V_kernel_scale, hidden_units);
+        device_malloc(&d_self_output_kernel_scale, hidden_units);
+
+        device_malloc(&d_attn_mask, total_len * total_len);
+        initAttnMaskKernel<<<total_len, 256, 0, stream>>>(d_attn_mask, total_len);
+
+        device_malloc(&d_ffn_resnorm_gamma, hidden_units);
+
+        device_malloc(&d_ffn_kernel1, ffn_hidden_units * hidden_units);
+        device_malloc(&d_ffn_kernel1_scale, ffn_hidden_units);
+        device_malloc(&d_ffn_kernel2, ffn_hidden_units * hidden_units);
+        device_malloc(&d_ffn_kernel2_scale, hidden_units);
+        device_malloc(&d_ffn_kernel3, ffn_hidden_units * hidden_units);
+        device_malloc(&d_ffn_kernel3_scale, ffn_hidden_units);
+
+        param[i].attn_resnorm.gamma = d_attn_resnorm_gamma;
+        param[i].attn_resnorm.eps = 1e-5f;
+        param[i].attention.query_weight.kernel = d_self_Q_kernel;
+        param[i].attention.query_weight.weight_scale = d_self_Q_kernel_scale;
+        param[i].attention.key_weight.kernel = d_self_K_kernel;
+        param[i].attention.key_weight.weight_scale = d_self_K_kernel_scale;
+        param[i].attention.value_weight.kernel = d_self_V_kernel;
+        param[i].attention.value_weight.weight_scale = d_self_Q_kernel_scale;
+        param[i].attention.attention_output_weight.kernel = d_self_output_kernel;
+        param[i].attention.attention_output_weight.weight_scale = d_self_output_kernel_scale;
+        param[i].attn_mask = d_attn_mask;
+        param[i].ffn_resnorm.gamma = d_ffn_resnorm_gamma;
+        param[i].ffn_resnorm.eps = 1e-5f;
+        param[i].ffn.w1_weight.kernel = d_ffn_kernel1;
+        param[i].ffn.w1_weight.weight_scale = d_ffn_kernel1_scale;
+        param[i].ffn.w2_weight.kernel = d_ffn_kernel2;
+        param[i].ffn.w2_weight.weight_scale = d_ffn_kernel2_scale;
+        param[i].ffn.w3_weight.kernel = d_ffn_kernel3;
+        param[i].ffn.w3_weight.weight_scale = d_ffn_kernel3_scale;
+
+        decoder->initialize(param[i], decoder_buf);
+    }
+
+    delete decoder;
 }
 
 int main()
@@ -1132,7 +1239,9 @@ int main()
 
     // testDequantizedResidual();
 
-    testCopyKVFromCache();
+    // testCopyKVFromCache();
+
+    testOpendecoder();
 
     return 0;
 }

@@ -41,7 +41,7 @@ namespace tinycudallama
         ResNormWeight<T> attn_resnorm;
         AttentionWeight<T> attention;
 
-        T attn_mask;
+        T *attn_mask;
 
         ResNormWeight<T> ffn_resnorm;
         FFNWeight<T> ffn;
@@ -119,13 +119,13 @@ namespace tinycudallama
             }
         }
 
-        void initialize(DecoderInitParam<DataType_> param, void *buf)
+        void initialize(DecoderInitParam<DataType_> param, char *buf)
         {
 #ifndef NDEBUG
             PRINT_FUNC_NAME_();
 #endif
             param_ = param;
-            int buf_size = batch_size * max_prompt_len_ * head_num * size_per_head;
+            int buf_size = batch_size_ * max_prompt_len_ * head_num_ * size_per_head_;
             from_tensor_int8_buf_ = (int8_t *)(buf);
             from_tensor_scale_buf_ = (float *)(from_tensor_int8_buf_ + buf_size);
             query_buf_ = (int32_t *)(from_tensor_scale_buf_ + batch_size_ * max_prompt_len_);
@@ -135,13 +135,13 @@ namespace tinycudallama
             key_out_buf_ = (float *)(query_out_buf_ + buf_size);
             value_out_fp_buf_ = (float *)(key_out_buf_ + buf_size);
             qk_buf_ = (float *)(value_out_fp_buf_ + buf_size);
-            qkv_buf_ = (float *)(qk_buf_ + batch_size * head_num * max_prompt_len_ * total_len_);
+            qkv_buf_ = (float *)(qk_buf_ + batch_size_ * head_num_ * max_prompt_len_ * total_len_);
             ffn_tensor_buf_ = (DataType_ *)(qkv_buf_ + buf_size);
             ffn_inter_scale_buf_ = (float *)(ffn_tensor_buf_ + buf_size);
 
 #ifndef NDEBUG
             cudaDeviceSynchronize();
-            check_cuda_error(cudaGetLastError());
+            CHECK_CUDA_ERROR(cudaGetLastError());
 #endif
         }
 
@@ -175,7 +175,7 @@ namespace tinycudallama
 
 #ifndef NDEBUG
                 cudaDeviceSynchronize();
-                check_cuda_error(cudaGetLastError());
+                CHECK_CUDA_ERROR(cudaGetLastError());
 #endif
 
                 /* Q\K\V gemm(from_tensor_int8_buf_) -> query_buf_、key_buf_、value_buf_ */
@@ -226,7 +226,7 @@ namespace tinycudallama
 
 #ifndef NDEBUG
                 cudaDeviceSynchronize();
-                check_cuda_error(cudaGetLastError());
+                CHECK_CUDA_ERROR(cudaGetLastError());
 #endif
 
                 /**
@@ -238,7 +238,7 @@ namespace tinycudallama
 
 #ifndef NDEBUG
                 cudaDeviceSynchronize();
-                check_cuda_error(cudaGetLastError());
+                CHECK_CUDA_ERROR(cudaGetLastError());
 #endif
 
                 /**
@@ -251,7 +251,7 @@ namespace tinycudallama
 
 #ifndef NDEBUG
                 cudaDeviceSynchronize();
-                check_cuda_error(cudaGetLastError());
+                CHECK_CUDA_ERROR(cudaGetLastError());
 #endif
 
                 // prompt 阶段，此时 qk 乘法为 gemm
@@ -288,7 +288,7 @@ namespace tinycudallama
 
 #ifndef NDEBUG
                 cudaDeviceSynchronize();
-                check_cuda_error(cudaGetLastError());
+                CHECK_CUDA_ERROR(cudaGetLastError());
 #endif
 
                 // prompt 阶段，此时 qk*v 乘法为 gemm
@@ -326,7 +326,7 @@ namespace tinycudallama
 
 #ifndef NDEBUG
                 cudaDeviceSynchronize();
-                check_cuda_error(cudaGetLastError());
+                CHECK_CUDA_ERROR(cudaGetLastError());
 #endif
 
                 /**
@@ -354,7 +354,7 @@ namespace tinycudallama
 
 #ifndef NDEBUG
                 cudaDeviceSynchronize();
-                check_cuda_error(cudaGetLastError());
+                CHECK_CUDA_ERROR(cudaGetLastError());
 #endif
 
                 n = ffn_hidden_units;
@@ -398,7 +398,7 @@ namespace tinycudallama
 
 #ifndef NDEBUG
                 cudaDeviceSynchronize();
-                check_cuda_error(cudaGetLastError());
+                CHECK_CUDA_ERROR(cudaGetLastError());
 #endif
 
                 k = ffn_hidden_units;
@@ -426,7 +426,7 @@ namespace tinycudallama
 
 #ifndef NDEBUG
                 cudaDeviceSynchronize();
-                check_cuda_error(cudaGetLastError());
+                CHECK_CUDA_ERROR(cudaGetLastError());
 #endif
             }
 

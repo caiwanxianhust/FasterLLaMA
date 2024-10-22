@@ -351,6 +351,11 @@ namespace tinycudallama
                                     decoding_params.decodingnorm.eps, args_.batch_size_ * cur_seq_len,
                                     args_.hidden_units_, decoding_params.stream);
 
+#ifndef NDEBUG
+                cudaDeviceSynchronize();
+                check_cuda_error(cudaGetLastError());
+#endif
+
                 float alpha = 1.0f;
                 float beta = 0.0f;
                 int m = args_.batch_size_ * cur_seq_len;
@@ -379,12 +384,23 @@ namespace tinycudallama
                     // step_logits_buf_ = logits_buf[:, -1, :]，and set the logits component corresponding to end_id to the maximum value
                     launchUpdateLogitsWithoutSoftmax(step_logits_buf_, logits_buf_, args_.end_id_, finished_buf_, args_.batch_size_,
                                                      cur_seq_len, args_.vocab_size_, decoding_params.stream);
+
+#ifndef NDEBUG
+                    cudaDeviceSynchronize();
+                    check_cuda_error(cudaGetLastError());
+#endif
+
                     launchTopKSamplingKernel(step_logits_buf_, topk_ids_buf_, topk_val_buf_,
                                              decoding_params.output_ids + (step - 1) * args_.batch_size_, decoding_params.sequence_length,
                                              finished_buf_, decoding_params.prompt_tokens, decoding_params.prompt_tokens_mask,
                                              cur_pos, max_prompt_seq_len,
                                              cur_pos, // used as a random seed
                                              args_.batch_size_, args_.vocab_size_, args_.candidate_num_, args_.end_id_, decoding_params.stream);
+
+#ifndef NDEBUG
+                    cudaDeviceSynchronize();
+                    check_cuda_error(cudaGetLastError());
+#endif
                 }
                 else if (args_.probability_threshold_ != 0.0)
                 {
@@ -393,12 +409,22 @@ namespace tinycudallama
                     launchUpdateLogitsKernelWithoutLog(step_logits_buf_, logits_buf_, finished_buf_, cur_seq_len, args_.end_id_,
                                                        args_.batch_size_, args_.vocab_size_, decoding_params.stream);
 
+#ifndef NDEBUG
+                    cudaDeviceSynchronize();
+                    check_cuda_error(cudaGetLastError());
+#endif
+
                     launchTopPSamplingKernel(step_logits_buf_, topp_id_vals_buf_, topp_sorted_log_prob_buf_, topp_sorted_id_vals_buf_,
                                              topp_offset_buf_, temp_storage_, finished_buf_, decoding_params.prompt_tokens,
                                              decoding_params.prompt_tokens_mask, cur_pos, max_prompt_seq_len,
                                              cur_pos, // used as a random seed
                                              decoding_params.output_ids + (step - 1) * args_.batch_size_, decoding_params.sequence_length,
                                              args_.batch_size_, args_.vocab_size_, args_.probability_threshold_, decoding_params.stream);
+
+#ifndef NDEBUG
+                    cudaDeviceSynchronize();
+                    check_cuda_error(cudaGetLastError());
+#endif
                 }
 
                 word_ids_buf_ = decoding_params.output_ids + (step - 1) * args_.batch_size_;
