@@ -183,7 +183,7 @@ namespace tinycudallama
      void launchQKRoteEmbeddingTranspose(float *q_buf, float *k_buf, const int32_t *Q,
                                          const int32_t *K, const float *q_inp_scale, const float *k_inp_scale,
                                          const float *q_weight_scale, const float *k_weight_scale,
-                                         float *freq_cis, const int batch_size, const int seq_len,
+                                         const float *freq_cis, const int batch_size, const int seq_len,
                                          const int start_pos, const int total_len, const int head_num,
                                          const int size_per_head, cudaStream_t stream = 0);
 

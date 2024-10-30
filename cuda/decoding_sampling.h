@@ -2,6 +2,7 @@
 
 #include "open_decoder.cuh"
 #include "decoding_kernels.cuh"
+#include "allocator.h"
 
 namespace tinycudallama
 {
@@ -9,25 +10,26 @@ namespace tinycudallama
     class DecodingInitParam
     {
     public:
-        const T *embedding_table;
-        const T *embedding_kernel;
-        const float *embedding_bias;
+        float *embedding_table;
+        float *embedding_kernel;
+        float *embedding_bias;
 
         float *freq_cis;
 
         // the length of tokens in the batch. [batch_size, ]
-        const int *prompt_sequence_length;
+        int *prompt_sequence_length;
+        int min_prompt_seq_len;
+        int max_prompt_seq_len;
         // [batch_size, max_prompt_seq_len]
-        const int *prompt_tokens;
+        int *prompt_tokens;
         // [batch_size, max_prompt_seq_len], pad token is 0, otherwise 1.
-        const bool *prompt_tokens_mask;
+        bool *prompt_tokens_mask;
 
         ResNormWeight<T> decodingnorm;
 
-        DenseWeight<T> output_weight;
+        DenseWeight<T, float> output_weight;
 
         int *output_ids;
-        int *parent_ids;
         int *sequence_length;
         cublasHandle_t cublas_handle;
         cudaStream_t stream;
@@ -51,7 +53,7 @@ namespace tinycudallama
         // the eos token's index
         int end_id_;
         int max_prompt_len_;
-        int max_gen_len;
+        int max_gen_len_;
     };
 
     struct DecodingSamplingArguments : public DecodingArguments
@@ -66,7 +68,7 @@ namespace tinycudallama
     struct DecodingBeamsearchArguments : public DecodingArguments
     {
         int beam_width_;
-        int temp_storage_size_;
+        size_t temp_storage_size_;
         float beam_search_diversity_rate_;
     };
 
@@ -79,13 +81,13 @@ namespace tinycudallama
         const IAllocator &allocator_;
         struct DecodingSamplingArguments args_;
 
-        const cudaDataType_t computeType_ = Traits_::computeType;
+        const cublasComputeType_t computeType_ = Traits_::computeType;
         const cudaDataType_t AType_ = Traits_::AType;
         const cudaDataType_t BType_ = Traits_::BType;
         const cudaDataType_t CType_ = Traits_::CType;
         int cublasAlgo_[1] = {20};
 
-        OpenDecoder<OpType_> *decoder_;
+        OpenDecoder<OpType_, OperationType::INT8> *decoder_;
         float *K_cache_;
         float *V_cache_;
         DataType_ *from_tensor_[2];
@@ -101,7 +103,7 @@ namespace tinycudallama
         bool *h_finished_buf_;
         // is initialized by [[0, 1, ..., vocab_size-1], [0, 1, ..., vocab_size-1], ..., [0, 1, ..., vocab_size-1]]
         int *topp_id_vals_buf_;
-        float *topp_sorted_log_prob_buf_;
+        float *topp_sorted_logits_prob_buf_;
         int *topp_sorted_id_vals_buf_;
         // is initialized by [0, vocab_size, ..., batch_size * vocab_size]
         int *topp_offset_buf_;
@@ -113,13 +115,12 @@ namespace tinycudallama
                          const int max_prompt_len, const int max_gen_len,
                          const int head_num, const int size_per_head,
                          const int vocab_size, const int decoder_layers,
-                         const int start_id, const int end_id,
-                         const int ffn_hidden_units, const int candidate_num = 0,
-                         const float probability_threshold = 0.0) : allocator_(allocator)
+                         const int end_id, const int ffn_hidden_units,
+                         const int candidate_num = 0, const float probability_threshold = 0.0) : allocator_(allocator)
         {
             args_.batch_size_ = batch_size;
             args_.max_prompt_len_ = max_prompt_len;
-            args_.max_gen_len = max_gen_len;
+            args_.max_gen_len_ = max_gen_len;
             args_.head_num_ = head_num;
             args_.size_per_head_ = size_per_head;
             args_.hidden_units_ = head_num * size_per_head;
@@ -127,7 +128,6 @@ namespace tinycudallama
             args_.vocab_size_ = vocab_size;
             args_.candidate_num_ = candidate_num;
             args_.probability_threshold_ = probability_threshold;
-            args_.start_id_ = start_id;
             args_.end_id_ = end_id;
             args_.ffn_hidden_units_ = ffn_hidden_units;
 
@@ -146,10 +146,12 @@ namespace tinycudallama
             PRINT_FUNC_NAME_();
 #endif
 
-            decoder_ = new OpenDecoder<OpType_>(batch_size, max_prompt_len, max_gen_len, head_num, size_per_head);
+            decoder_ = new OpenDecoder<OpType_, OperationType::INT8>(batch_size, max_prompt_len, max_gen_len, head_num, size_per_head);
 
             int from_tensor_size = args_.batch_size_ * args_.max_prompt_len_ * args_.hidden_units_; // type T
             int decoder_workspace_size = decoder_->getWorkspaceSize();
+
+            printf("decoder_workspace_size: %d\n", decoder_workspace_size);
             int decoder_normed_result_buf_size = args_.batch_size_ * args_.max_prompt_len_ * args_.hidden_units_;    // type T
             int cache_size = args_.batch_size_ * (args_.max_prompt_len_ + args_.max_gen_len_) * args_.hidden_units_; // type float
 
@@ -169,13 +171,16 @@ namespace tinycudallama
             step_logits_buf_size = (int)(ceil(step_logits_buf_size / 4.)) * 4;
             word_ids_buf_size = (int)(ceil(word_ids_buf_size / 4.)) * 4;
             finished_buf_size = (int)(ceil(finished_buf_size / 32.)) * 32;
+
+            printf("finished_buf_size = %d\n", finished_buf_size);
+
             topk_ids_buf_size = (int)(ceil(topk_ids_buf_size / 4.)) * 4;
             topk_val_buf_size = (int)(ceil(topk_val_buf_size / 4.)) * 4;
             topp_id_vals_buf_size = (int)(ceil(topp_id_vals_buf_size / 4.)) * 4;
             topp_sorted_logits_prob_buf_size = (int)(ceil(topp_sorted_logits_prob_buf_size / 4.)) * 4;
             topp_sorted_id_vals_buf_size = (int)(ceil(topp_sorted_id_vals_buf_size / 4.)) * 4;
 
-            args_.temp_storage_size_ = getToppSortTempStorageSize(step_logits_buf_, topp_id_vals_buf_, topp_sorted_log_prob_buf_,
+            args_.temp_storage_size_ = getToppSortTempStorageSize(step_logits_buf_, topp_id_vals_buf_, topp_sorted_logits_prob_buf_,
                                                                   topp_sorted_id_vals_buf_, topp_offset_buf_,
                                                                   args_.batch_size_, args_.vocab_size_);
 
@@ -184,10 +189,22 @@ namespace tinycudallama
             topp_offset_buf_size = (int)(ceil(topp_offset_buf_size / 4.)) * 4;
 
             int datatype_buf_size = from_tensor_size * 2 + decoder_normed_result_buf_size;
+            printf("datatype_buf_size : %d\n", datatype_buf_size);
             int float_buf_size = cache_size * 2 * args_.decoder_layers_ + logits_buf_size + step_logits_buf_size + topk_val_buf_size +
                                  topp_sorted_logits_prob_buf_size;
+            printf("float_buf_size : %d\n", float_buf_size);
             int int_buf_size = word_ids_buf_size + topk_ids_buf_size + topp_id_vals_buf_size + topp_sorted_id_vals_buf_size +
                                topp_offset_buf_size;
+            printf("int_buf_size : %d\n", int_buf_size);
+
+            size_t d_mem_size = sizeof(DataType_) * datatype_buf_size +
+                sizeof(float) * float_buf_size +
+                sizeof(int) * int_buf_size +
+                sizeof(bool) * finished_buf_size +
+                sizeof(char) * decoder_workspace_size +
+                args_.temp_storage_size_;
+
+            printf("the decoding sampling device memory : %zu GB\n", d_mem_size / 1024 / 1024);
 
             buf_ = reinterpret_cast<void *>(allocator_.malloc(
                 sizeof(DataType_) * datatype_buf_size +
@@ -196,6 +213,19 @@ namespace tinycudallama
                 sizeof(bool) * finished_buf_size +
                 sizeof(char) * decoder_workspace_size +
                 args_.temp_storage_size_));
+
+            // CHECK_CUDA_ERROR(cudaMalloc(&buf_, sizeof(DataType_) * datatype_buf_size +
+            //     sizeof(float) * float_buf_size +
+            //     sizeof(int) * int_buf_size +
+            //     sizeof(bool) * finished_buf_size +
+            //     sizeof(char) * decoder_workspace_size +
+            //     args_.temp_storage_size_));
+
+#ifndef NDEBUG
+            cudaDeviceSynchronize();
+            CHECK_CUDA_ERROR(cudaGetLastError());
+            printf("device memory for buf_ is mallocated\n");
+#endif
 
             from_tensor_[0] = (DataType_ *)buf_;
             from_tensor_[1] = (DataType_ *)(from_tensor_[0] + from_tensor_size);
@@ -230,7 +260,7 @@ namespace tinycudallama
             }
         }
 
-        void forward(const DecoderInitParam<DataType_> *param,
+        void forward(const DecoderInitParam<DataType_, int8_t> *param,
                      DecodingInitParam<DataType_> decoding_params)
         {
 
@@ -240,6 +270,7 @@ namespace tinycudallama
 
             if (args_.candidate_num_ != 0)
             {
+                printf("candidate_num = %d\n", args_.candidate_num_);
                 /**
                  * decoding_params.sequence_length is initialized by 0
                  * finished_buf_ is initialized by false
@@ -248,6 +279,7 @@ namespace tinycudallama
             }
             else if (args_.probability_threshold_ != 0.0)
             {
+                printf("probability_threshold = %g\n", args_.probability_threshold_);
                 /**
                  * decoding_params.sequence_length is initialized by 0
                  * finished_buf_ is initialized by false
@@ -260,35 +292,33 @@ namespace tinycudallama
 
 #ifndef NDEBUG
             cudaDeviceSynchronize();
-            check_cuda_error(cudaGetLastError());
+            CHECK_CUDA_ERROR(cudaGetLastError());
 #endif
 
             int cache_size = args_.batch_size_ * (args_.max_prompt_len_ + args_.max_gen_len_) * args_.hidden_units_; // type float
 
-            int min_prompt_seq_len = args_.max_prompt_len_;
-            int max_prompt_seq_len = 0;
-            for (int i = 0; i < args_.batch_size_; ++i)
-            {
-                min_prompt_seq_len = min(decoding_params.prompt_sequence_length[i], min_prompt_seq_len);
-                max_prompt_seq_len = max(decoding_params.prompt_sequence_length[i], max_prompt_seq_len);
-            }
-            assert(max_prompt_seq_len < args_.max_prompt_len_);
-            int total_seq_len = max_prompt_seq_len + args_.max_gen_len;
+            int min_prompt_seq_len = min(args_.max_prompt_len_, decoding_params.min_prompt_seq_len);
+            int max_prompt_seq_len = decoding_params.max_prompt_seq_len;
+            assert(max_prompt_seq_len <= args_.max_prompt_len_);
+            int total_seq_len = max_prompt_seq_len + args_.max_gen_len_;
 
             /**
              * init the freq_cis matrix, the freq_cis are only related to size_per_head
              */
+            printf("call launchPrecomputeFreqsCis\n");
             launchPrecomputeFreqsCis(decoding_params.freq_cis, args_.size_per_head_, total_seq_len, decoding_params.stream);
 
 #ifndef NDEBUG
             cudaDeviceSynchronize();
-            check_cuda_error(cudaGetLastError());
+            CHECK_CUDA_ERROR(cudaGetLastError());
 #endif
             int prev_pos = 0;
             for (int cur_pos = min_prompt_seq_len; cur_pos < total_seq_len; ++cur_pos)
             {
                 int cur_seq_len = cur_pos - prev_pos;
                 int step = cur_pos - min_prompt_seq_len + 1;
+
+                printf("step: %d\n", step);
 
                 /**
                  * Embedding Lookup
@@ -308,7 +338,7 @@ namespace tinycudallama
 
 #ifndef NDEBUG
                 cudaDeviceSynchronize();
-                check_cuda_error(cudaGetLastError());
+                CHECK_CUDA_ERROR(cudaGetLastError());
 #endif
 
                 int from_id, out_id;
@@ -333,7 +363,7 @@ namespace tinycudallama
 
 #ifndef NDEBUG
                     cudaDeviceSynchronize();
-                    check_cuda_error(cudaGetLastError());
+                    CHECK_CUDA_ERROR(cudaGetLastError());
 #endif
                     decoder_->forward(from_tensor_[from_id], decoding_params.freq_cis,
                                       K_cache_ + layer * cache_size,
@@ -343,7 +373,7 @@ namespace tinycudallama
 
 #ifndef NDEBUG
                     cudaDeviceSynchronize();
-                    check_cuda_error(cudaGetLastError());
+                    CHECK_CUDA_ERROR(cudaGetLastError());
 #endif
                 }
 
@@ -353,7 +383,7 @@ namespace tinycudallama
 
 #ifndef NDEBUG
                 cudaDeviceSynchronize();
-                check_cuda_error(cudaGetLastError());
+                CHECK_CUDA_ERROR(cudaGetLastError());
 #endif
 
                 float alpha = 1.0f;
@@ -362,20 +392,20 @@ namespace tinycudallama
                 int k = args_.hidden_units_;
                 int n = args_.vocab_size_;
 
-                check_cuda_error(cublasGemmEx(decoding_params.cublas_handle,
-                                              CUBLAS_OP_N, CUBLAS_OP_N,
-                                              n, m, k,
-                                              &alpha,
-                                              decoding_params.output_weight.kernel, AType_, n,
-                                              decoder_normed_result_buf_, BType_, k,
-                                              &beta,
-                                              logits_buf_, CUDA_R_32F, n,
-                                              CUDA_R_32F,
-                                              static_cast<cublasGemmAlgo_t>(cublasAlgo_[0])));
+                CHECK_CUBLAS_STATUS(cublasGemmEx(decoding_params.cublas_handle,
+                                                 CUBLAS_OP_N, CUBLAS_OP_N,
+                                                 n, m, k,
+                                                 &alpha,
+                                                 decoding_params.output_weight.kernel, AType_, n,
+                                                 decoder_normed_result_buf_, BType_, k,
+                                                 &beta,
+                                                 logits_buf_, CUDA_R_32F, n,
+                                                 CUBLAS_COMPUTE_32F,
+                                                 static_cast<cublasGemmAlgo_t>(cublasAlgo_[0])));
 
 #ifndef NDEBUG
                 cudaDeviceSynchronize();
-                check_cuda_error(cudaGetLastError());
+                CHECK_CUDA_ERROR(cudaGetLastError());
 #endif
 
                 if (args_.candidate_num_ != 0)
@@ -387,7 +417,7 @@ namespace tinycudallama
 
 #ifndef NDEBUG
                     cudaDeviceSynchronize();
-                    check_cuda_error(cudaGetLastError());
+                    CHECK_CUDA_ERROR(cudaGetLastError());
 #endif
 
                     launchTopKSamplingKernel(step_logits_buf_, topk_ids_buf_, topk_val_buf_,
@@ -399,7 +429,7 @@ namespace tinycudallama
 
 #ifndef NDEBUG
                     cudaDeviceSynchronize();
-                    check_cuda_error(cudaGetLastError());
+                    CHECK_CUDA_ERROR(cudaGetLastError());
 #endif
                 }
                 else if (args_.probability_threshold_ != 0.0)
@@ -411,19 +441,20 @@ namespace tinycudallama
 
 #ifndef NDEBUG
                     cudaDeviceSynchronize();
-                    check_cuda_error(cudaGetLastError());
+                    CHECK_CUDA_ERROR(cudaGetLastError());
 #endif
 
-                    launchTopPSamplingKernel(step_logits_buf_, topp_id_vals_buf_, topp_sorted_log_prob_buf_, topp_sorted_id_vals_buf_,
-                                             topp_offset_buf_, temp_storage_, finished_buf_, decoding_params.prompt_tokens,
+                    launchTopPSamplingKernel(step_logits_buf_, topp_id_vals_buf_, topp_sorted_logits_prob_buf_, topp_sorted_id_vals_buf_,
+                                             topp_offset_buf_, temp_storage_, args_.temp_storage_size_, finished_buf_, decoding_params.prompt_tokens,
                                              decoding_params.prompt_tokens_mask, cur_pos, max_prompt_seq_len,
                                              cur_pos, // used as a random seed
                                              decoding_params.output_ids + (step - 1) * args_.batch_size_, decoding_params.sequence_length,
-                                             args_.batch_size_, args_.vocab_size_, args_.probability_threshold_, decoding_params.stream);
+                                             args_.end_id_, args_.batch_size_, args_.vocab_size_, args_.probability_threshold_,
+                                             decoding_params.stream);
 
 #ifndef NDEBUG
                     cudaDeviceSynchronize();
-                    check_cuda_error(cudaGetLastError());
+                    CHECK_CUDA_ERROR(cudaGetLastError());
 #endif
                 }
 
@@ -433,7 +464,7 @@ namespace tinycudallama
 
 #ifndef NDEBUG
                 cudaDeviceSynchronize();
-                check_cuda_error(cudaGetLastError());
+                CHECK_CUDA_ERROR(cudaGetLastError());
 #endif
 
                 // TODO

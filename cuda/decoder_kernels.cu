@@ -177,7 +177,7 @@ namespace tinycudallama
     {
         assert(hidden_units % 4 == 0);
         int mem_size = sizeof(float) * hidden_units;
-        resNormQuantizedKernel<DataType><<<nrows, hidden_units, mem_size, stream>>>(output, input, gamma, norm_scale, eps, hidden_units);
+        resNormQuantizedKernel<DataType><<<nrows, 256, mem_size, stream>>>(output, input, gamma, norm_scale, eps, hidden_units);
     }
 
     /** precomputeFreqsCis
@@ -544,7 +544,7 @@ namespace tinycudallama
      */
     __global__ void warpQKRoteEmbeddingTransposeKernel(float *q_buf, float *k_buf, const int32_t *Q,
                                                        const int32_t *K, const float *q_inp_scale, const float *k_inp_scale,
-                                                       const float *q_weight_scale, const float *k_weight_scale, float *freq_cis,
+                                                       const float *q_weight_scale, const float *k_weight_scale, const float *freq_cis,
                                                        const int batch_size, const int seq_len,
                                                        const int start_pos, const int total_len, const int head_num,
                                                        const int size_per_head)
@@ -594,7 +594,7 @@ namespace tinycudallama
     __global__ void blockQKRoteEmbeddingTransposeForDim256Kernel(float *q_buf, float *k_buf, const int32_t *Q,
                                                                  const int32_t *K, const float *q_inp_scale, const float *k_inp_scale,
                                                                  const float *q_weight_scale, const float *k_weight_scale,
-                                                                 float *freq_cis, const int batch_size, const int seq_len,
+                                                                 const float *freq_cis, const int batch_size, const int seq_len,
                                                                  const int start_pos, const int total_len, const int head_num,
                                                                  const int size_per_head)
     {
@@ -635,7 +635,7 @@ namespace tinycudallama
     __global__ void blockQKRoteEmbeddingTransposeKernel(float *q_buf, float *k_buf, const int32_t *Q,
                                                         const int32_t *K, const float *q_inp_scale, const float *k_inp_scale,
                                                         const float *q_weight_scale, const float *k_weight_scale,
-                                                        float *freq_cis, const int batch_size, const int seq_len,
+                                                        const float *freq_cis, const int batch_size, const int seq_len,
                                                         const int start_pos, const int total_len, const int head_num,
                                                         const int size_per_head)
     {
@@ -673,7 +673,7 @@ namespace tinycudallama
     void launchQKRoteEmbeddingTranspose(float *q_buf, float *k_buf, const int32_t *Q,
                                         const int32_t *K, const float *q_inp_scale, const float *k_inp_scale,
                                         const float *q_weight_scale, const float *k_weight_scale,
-                                        float *freq_cis, const int batch_size, const int seq_len,
+                                        const float *freq_cis, const int batch_size, const int seq_len,
                                         const int start_pos, const int total_len, const int head_num,
                                         const int size_per_head, cudaStream_t stream)
     {

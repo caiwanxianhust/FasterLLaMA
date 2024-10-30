@@ -1,14 +1,20 @@
 #pragma once
 
+#include <cub/cub.cuh>
 #include "cuda_kernels.cuh"
 
 namespace tinycudallama
 {
+    namespace
+    {
+        constexpr int defalut_block_size = 256;
+    }
+
     /**
      * decoding_params.sequence_length is initialized by 0
      * finished_buf_ is initialized by false
      */
-    __global__ void topKSamplingInitKernel(bool *__restrict__ finished, int *__restrict__ sequence_length);
+    __global__ void topKSamplingInitKernel(bool *__restrict__ finished, int *__restrict__ sequence_length, const int batch_size);
 
     void launchTopKSamplingInitKernel(bool *__restrict__ finished, int *__restrict__ sequence_length,
                                       const int batch_size, cudaStream_t stream = 0);
@@ -49,6 +55,56 @@ namespace tinycudallama
                                           const bool *__restrict__ finished, const int batch_size, const int seq_len,
                                           const int vocab_size, cudaStream_t stream = 0);
 
+    template <typename T, int MAX_K>
+    struct TopK
+    {
+        int p[MAX_K];
+        T u[MAX_K];
+
+        __device__ __forceinline__ void insert(T elem, int elem_id)
+        {
+            if (elem > u[MAX_K - 1] || (p[MAX_K - 1] == -1) || ((elem == u[MAX_K - 1]) && (elem_id < p[MAX_K - 1])))
+            // if (elem > u[MAX_K-1] || ((elem == u[MAX_K-1]) && (elem_id < p[MAX_K-1])))
+            {
+                u[MAX_K - 1] = elem;
+                p[MAX_K - 1] = elem_id;
+            }
+
+            for (int k = MAX_K - 2; k >= 0; --k)
+            {
+                if ((u[k + 1] > u[k]) || (p[k] == -1) || ((u[k + 1] == u[k]) && (p[k + 1] < p[k])))
+                // if ((u[k+1] > u[k]) || ((u[k+1] == u[k])&&(p[k+1] < p[k])))
+                {
+                    T u2 = u[k];
+                    int p2 = p[k];
+                    u[k] = u[k + 1];
+                    p[k] = p[k + 1];
+                    u[k + 1] = u2;
+                    p[k + 1] = p2;
+                }
+            }
+        }
+
+        __device__ __forceinline__ void init()
+        {
+#pragma unroll
+            for (int i = 0; i < MAX_K; i++)
+            {
+                p[i] = -1;
+                u[i] = -FLT_MAX;
+            }
+        }
+    };
+
+    template <typename T, int MAX_K>
+    __device__ __forceinline__ TopK<T, MAX_K> reduce_topk_op(const TopK<T, MAX_K> &a, const TopK<T, MAX_K> &b)
+    {
+        TopK<T, MAX_K> res = a;
+        for (int i = 0; i < MAX_K; ++i)
+            res.insert(b.u[i], b.p[i]);
+        return res;
+    }
+
     /**
      * top-k Sampling kernel
      * grid(1), block(batch_size)
@@ -67,10 +123,10 @@ namespace tinycudallama
                                                                          const int vocab_size,
                                                                          T diversity_rate);
 
-#define CASE_K(K)                                                                                                                                   \
-    case K:                                                                                                                                         \
-        beam_topK_kernel<T, K, local_block_size><<<batch_size, local_block_size, 0, stream>>>(log_probs,                                            \
-                                                                                              topk_tmp_id_buf, topk_tmp_val_buf, vocab_size, 0.0f); \
+#define CASE_K(K)                                                                                                                                       \
+    case K:                                                                                                                                             \
+        beam_topK_kernel<T, K, defalut_block_size><<<batch_size, defalut_block_size, 0, stream>>>(log_probs,                                            \
+                                                                                                  topk_tmp_id_buf, topk_tmp_val_buf, vocab_size, 0.0f); \
         break;
 
     template <typename T>
@@ -109,8 +165,8 @@ namespace tinycudallama
     template <typename T>
     void launchTopPSamplingKernel(const T *__restrict__ logits_probs, const int *__restrict__ id_vals, T *__restrict__ sorted_logits_probs,
                                   int *__restrict__ sorted_id_vals, const int *__restrict__ topp_offset_buf, void *__restrict__ temp_storage,
-                                  bool *__restrict__ finished_buf, const int *__restrict__ prompt_tokens,
+                                  size_t temp_storage_size, bool *__restrict__ finished_buf, const int *__restrict__ prompt_tokens,
                                   const bool *__restrict__ prompt_tokens_mask, const int cur_pos, const int max_prompt_seq_len,
-                                  const int random_num, int *__restrict__ output_ids, int *__restrict__ sequence_length,
+                                  const int random_num, int *__restrict__ output_ids, int *__restrict__ sequence_length, const int end_id,
                                   const int batch_size, const int vocab_size, const float probability_threshold, cudaStream_t stream = 0);
 }

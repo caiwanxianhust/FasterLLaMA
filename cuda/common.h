@@ -9,7 +9,8 @@ namespace tinycudallama
     enum class OperationType
     {
         FP32,
-        FP16
+        FP16,
+        INT8
     };
     enum class AllocatorType
     {
@@ -25,29 +26,29 @@ namespace tinycudallama
         float eps = 1e-5f;
     };
 
-    template <typename T>
+    template <typename T, typename WeightType>
     struct DenseWeight
     {
-        const T *kernel = nullptr;
+        const WeightType *kernel = nullptr;
         const T *bias = nullptr;
         const float *weight_scale = nullptr;
     };
 
-    template <typename T>
+    template <typename T, typename WeightType>
     struct AttentionWeight
     {
-        DenseWeight<T> query_weight;
-        DenseWeight<T> key_weight;
-        DenseWeight<T> value_weight;
-        DenseWeight<T> attention_output_weight;
+        DenseWeight<T, WeightType> query_weight;
+        DenseWeight<T, WeightType> key_weight;
+        DenseWeight<T, WeightType> value_weight;
+        DenseWeight<T, WeightType> attention_output_weight;
     };
 
-    template <typename T>
+    template <typename T, typename WeightType>
     struct FFNWeight
     {
-        DenseWeight<T> w1_weight;
-        DenseWeight<T> w2_weight;
-        DenseWeight<T> w3_weight;
+        DenseWeight<T, WeightType> w1_weight;
+        DenseWeight<T, WeightType> w2_weight;
+        DenseWeight<T, WeightType> w3_weight;
     };
 
     static const char *_cudaGetErrorEnum(cublasStatus_t error)

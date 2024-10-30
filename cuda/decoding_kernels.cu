@@ -6,19 +6,22 @@ namespace tinycudallama
      * decoding_params.sequence_length is initialized by 0
      * finished_buf_ is initialized by false
      */
-    __global__ void topKSamplingInitKernel(bool *__restrict__ finished, int *__restrict__ sequence_length)
+    __global__ void topKSamplingInitKernel(bool *__restrict__ finished, int *__restrict__ sequence_length, const int batch_size)
     {
         int tid = threadIdx.x;
-        finished[tid] = false;
-        sequence_length[tid] = 0;
+        if (tid < batch_size)
+        {
+            finished[tid] = false;
+            sequence_length[tid] = 0;
+        }
     }
 
     void launchTopKSamplingInitKernel(bool *__restrict__ finished, int *__restrict__ sequence_length,
-                                      const int batch_size, cudaStream_t stream = 0)
+                                      const int batch_size, cudaStream_t stream)
     {
         dim3 grid(1);
         dim3 block(min(1024, batch_size));
-        topKSamplingInitKernel<<<grid, block, 0, stream>>>(finished, sequence_length);
+        topKSamplingInitKernel<<<grid, block, 0, stream>>>(finished, sequence_length, batch_size);
     }
 
     /**
@@ -56,7 +59,7 @@ namespace tinycudallama
 
     void launchTopPInitializationKernel(bool *__restrict__ finished, int *__restrict__ sequence_length,
                                         int *__restrict__ topp_id_val_buf, int *__restrict__ topp_offset_buf,
-                                        const int batch_size, const int vocab_size, cudaStream_t stream = 0)
+                                        const int batch_size, const int vocab_size, cudaStream_t stream)
     {
         topPInitializationKernel<<<32, 512, 0, stream>>>(finished, sequence_length, topp_id_val_buf, topp_offset_buf,
                                                          batch_size, vocab_size);
@@ -66,24 +69,25 @@ namespace tinycudallama
     __global__ void embeddingLookupKernel(T *__restrict__ from_tensor, const T *__restrict__ embedding_table,
                                           const int *__restrict__ word_ids, const int hidden_units)
     {
-        const int tid = threadIdx.x;
         const int token_id = blockIdx.x;
         const int batch_id = blockIdx.y;
-        const int write_pos = tid + token_id * blockDim.x + batch_id * gridDim.x * blockDim.x;
-        // 1. lookup the table
-        // 2. multiply hidden_dim**0.5
-        from_tensor[write_pos] = embedding_table[word_ids[batch_id * gridDim.x + token_id] * hidden_units + tid] *
-                                 (T)sqrtf(float(hidden_units));
+        for (int tid = threadIdx.x; tid < hidden_units; tid += blockDim.x)
+        {
+            int write_pos = tid + token_id * hidden_units + batch_id * gridDim.x * hidden_units;
+            // 1. lookup the table
+            // 2. multiply hidden_dim**0.5
+            from_tensor[write_pos] = embedding_table[word_ids[batch_id * gridDim.x + token_id] * hidden_units + tid] *
+                                     (T)sqrtf(float(hidden_units));
+        }
     }
 
     template <typename T>
     void launchEmbeddingLookupKernel(T *__restrict__ from_tensor, const T *__restrict__ embedding_table, const int *__restrict__ word_ids,
                                      const int batch_size, const int cur_seq_len, const int seq_len, const int hidden_units,
-                                     cudaStream_t stream = 0)
+                                     cudaStream_t stream)
     {
-        assert(hidden_units <= 1024);
         dim3 grid(cur_seq_len, batch_size);
-        dim3 block(hidden_units);
+        dim3 block(256);
         embeddingLookupKernel<T><<<grid, block, 0, stream>>>(from_tensor, embedding_table, word_ids, hidden_units);
     }
 
@@ -114,7 +118,7 @@ namespace tinycudallama
 
     void launchUpdateLogitsWithoutSoftmax(float *__restrict__ step_logits, const float *__restrict__ logits, const int end_id,
                                           const bool *__restrict__ finished, const int batch_size, const int seq_len,
-                                          const int vocab_size, cudaStream_t stream = 0)
+                                          const int vocab_size, cudaStream_t stream)
     {
         dim3 grid(batch_size);
         dim3 block(min(vocab_size, 1024));
@@ -169,7 +173,7 @@ namespace tinycudallama
                     }
                 }
 
-                sequence_length[threadIdx.x] = finished_buf[threadIdx.x] ? sequence_length[bid] : sequence_length[bid] + 1;
+                sequence_length[threadIdx.x] = finished_buf[threadIdx.x] ? sequence_length[threadIdx.x] : sequence_length[threadIdx.x] + 1;
                 finished_buf[threadIdx.x] = ids[threadIdx.x] == end_id ? true : false;
             }
         }
@@ -225,7 +229,7 @@ namespace tinycudallama
                                   int *__restrict__ ids, int *__restrict__ sequence_length, bool *__restrict__ finished_buf,
                                   const int *__restrict__ prompt_tokens, const bool *__restrict__ prompt_tokens_mask,
                                   const int cur_pos, const int max_prompt_seq_len, int random_num, const int batch_size,
-                                  const int vocab_size, const int candidate_num, const int end_id, cudaStream_t stream = 0)
+                                  const int vocab_size, const int candidate_num, const int end_id, cudaStream_t stream)
     {
         int local_block_size = 256;
         switch (candidate_num)
@@ -241,7 +245,7 @@ namespace tinycudallama
         assert(batch_size <= 1024);
         if (batch_size <= 128)
         {
-            local_block_size = 128
+            local_block_size = 128;
         }
         else if (batch_size <= 256)
         {
@@ -257,7 +261,7 @@ namespace tinycudallama
         }
         topKSampling<T><<<1, local_block_size, 0, stream>>>(topk_tmp_id_buf, topk_tmp_val_buf, ids, sequence_length, finished_buf,
                                                             prompt_tokens, prompt_tokens_mask, cur_pos, max_prompt_seq_len, candidate_num,
-                                                            random_num, end_id, vocab_size);
+                                                            random_num, end_id, batch_size, vocab_size);
     }
 
     __global__ void updateLogitsKernelWithoutLog(float *__restrict__ step_logits, const float *__restrict__ logits,
@@ -283,7 +287,7 @@ namespace tinycudallama
         max_val = blockAllReduceMax<float>(max_val);
 
         float sum_val = 0.0f;
-        for (int tid = threadIdx.x; tid < n; tid += blockDim.x)
+        for (int tid = threadIdx.x; tid < vocab_size; tid += blockDim.x)
         {
             step_logits[offset + tid] = __expf(step_logits[offset + tid] - max_val);
             sum_val += step_logits[offset + tid];
@@ -291,7 +295,7 @@ namespace tinycudallama
 
         sum_val = blockAllReduceSum<float>(sum_val);
 
-        for (int tid = threadIdx.x; tid < n; tid += blockDim.x)
+        for (int tid = threadIdx.x; tid < vocab_size; tid += blockDim.x)
         {
             step_logits[offset + tid] = (step_logits[offset + tid] / sum_val);
         }
@@ -299,7 +303,7 @@ namespace tinycudallama
 
     void launchUpdateLogitsKernelWithoutLog(float *__restrict__ step_logits, const float *__restrict__ logits,
                                             const bool *__restrict__ finished, const int seq_len, const int end_id,
-                                            const int batch_size, const int vocab_size, cudaStream_t stream = 0)
+                                            const int batch_size, const int vocab_size, cudaStream_t stream)
     {
         dim3 grid(batch_size);
         dim3 block(min(vocab_size, 1024));
@@ -378,10 +382,10 @@ namespace tinycudallama
     template <typename T>
     void launchTopPSamplingKernel(const T *__restrict__ logits_probs, const int *__restrict__ id_vals, T *__restrict__ sorted_logits_probs,
                                   int *__restrict__ sorted_id_vals, const int *__restrict__ topp_offset_buf, void *__restrict__ temp_storage,
-                                  bool *__restrict__ finished_buf, const int *__restrict__ prompt_tokens,
+                                  size_t temp_storage_size, bool *__restrict__ finished_buf, const int *__restrict__ prompt_tokens,
                                   const bool *__restrict__ prompt_tokens_mask, const int cur_pos, const int max_prompt_seq_len,
-                                  const int random_num, int *__restrict__ output_ids, int *__restrict__ sequence_length,
-                                  const int batch_size, const int vocab_size, const float probability_threshold, cudaStream_t stream = 0)
+                                  const int random_num, int *__restrict__ output_ids, int *__restrict__ sequence_length, const int end_id,
+                                  const int batch_size, const int vocab_size, const float probability_threshold, cudaStream_t stream)
     {
 
         cub::DeviceSegmentedRadixSort::SortPairsDescending(temp_storage,
@@ -398,7 +402,7 @@ namespace tinycudallama
         assert(batch_size <= 1024);
         if (batch_size <= 128)
         {
-            local_block_size = 128
+            local_block_size = 128;
         }
         else if (batch_size <= 256)
         {
@@ -420,21 +424,23 @@ namespace tinycudallama
 
     template void launchEmbeddingLookupKernel(float *__restrict__ from_tensor, const float *__restrict__ embedding_table,
                                               const int *__restrict__ word_ids, const int batch_size, const int cur_seq_len,
-                                              const int seq_len, const int hidden_units, cudaStream_t stream = 0);
+                                              const int seq_len, const int hidden_units, cudaStream_t stream);
 
     template void launchTopKSamplingKernel(float *__restrict__ log_probs, int *__restrict__ topk_tmp_id_buf,
                                            float *__restrict__ topk_tmp_val_buf, int *__restrict__ ids,
                                            int *__restrict__ sequence_length, bool *__restrict__ finished_buf,
                                            const int *__restrict__ prompt_tokens, const bool *__restrict__ prompt_tokens_mask,
                                            const int cur_pos, const int max_prompt_seq_len, int random_num, const int batch_size,
-                                           const int vocab_size, const int candidate_num, const int end_id, cudaStream_t stream = 0);
+                                           const int vocab_size, const int candidate_num, const int end_id, cudaStream_t stream);
 
     template void launchTopPSamplingKernel(const float *__restrict__ logits_probs, const int *__restrict__ id_vals,
                                            float *__restrict__ sorted_logits_probs, int *__restrict__ sorted_id_vals,
                                            const int *__restrict__ topp_offset_buf, void *__restrict__ temp_storage,
+                                           size_t temp_storage_size,
                                            bool *__restrict__ finished_buf, const int *__restrict__ prompt_tokens,
                                            const bool *__restrict__ prompt_tokens_mask, const int cur_pos, const int max_prompt_seq_len,
                                            const int random_num, int *__restrict__ output_ids, int *__restrict__ sequence_length,
+                                           const int end_id,
                                            const int batch_size, const int vocab_size, const float probability_threshold,
-                                           cudaStream_t stream = 0);
+                                           cudaStream_t stream);
 }

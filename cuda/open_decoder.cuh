@@ -8,16 +8,29 @@ namespace tinycudallama
     class TransformerTraits;
 
     template <>
+    class TransformerTraits<OperationType::INT8>
+    {
+    public:
+        typedef int8_t DataType;
+        typedef int32_t AlphaType;
+        static const OperationType OpType = OperationType::INT8;
+        static cublasComputeType_t const computeType = CUBLAS_COMPUTE_32I;
+        static cudaDataType_t const AType = CUDA_R_8I;
+        static cudaDataType_t const BType = CUDA_R_8I;
+        static cudaDataType_t const CType = CUDA_R_32I;
+    };
+
+    template <>
     class TransformerTraits<OperationType::FP32>
     {
     public:
         typedef float DataType;
+        typedef float AlphaType;
         static const OperationType OpType = OperationType::FP32;
-        static cublasComputeType_t const computeType = CUBLAS_COMPUTE_32I;
-        typedef int32_t AlphaBetaType;
-        static cudaDataType_t const AType = CUDA_R_8I;
-        static cudaDataType_t const BType = CUDA_R_8I;
-        static cudaDataType_t const CType = CUDA_R_32I;
+        static cublasComputeType_t const computeType = CUBLAS_COMPUTE_32F_FAST_16F;
+        static cudaDataType_t const AType = CUDA_R_32F;
+        static cudaDataType_t const BType = CUDA_R_32F;
+        static cudaDataType_t const CType = CUDA_R_32F;
     };
 
     template <>
@@ -25,26 +38,26 @@ namespace tinycudallama
     {
     public:
         typedef half DataType;
+        typedef half AlphaType;
         static const OperationType OpType = OperationType::FP16;
-        static cublasComputeType_t const computeType = CUBLAS_COMPUTE_32I;
-        typedef int32_t AlphaBetaType;
-        static cudaDataType_t const AType = CUDA_R_8I;
-        static cudaDataType_t const BType = CUDA_R_8I;
-        static cudaDataType_t const CType = CUDA_R_32I;
+        static cublasComputeType_t const computeType = CUBLAS_COMPUTE_16F;
+        static cudaDataType_t const AType = CUDA_R_16F;
+        static cudaDataType_t const BType = CUDA_R_16F;
+        static cudaDataType_t const CType = CUDA_R_16F;
     };
 
-    template <typename T>
+    template <typename T, typename WeightType>
     class DecoderInitParam
     {
     public:
         /* weights for transformer */
         ResNormWeight<T> attn_resnorm;
-        AttentionWeight<T> attention;
+        AttentionWeight<T, WeightType> attention;
 
-        T *attn_mask;
+        float *attn_mask;
 
         ResNormWeight<T> ffn_resnorm;
-        FFNWeight<T> ffn;
+        FFNWeight<T, WeightType> ffn;
 
         cublasHandle_t cublas_handle;
         cudaStream_t stream;
@@ -63,19 +76,23 @@ namespace tinycudallama
     {
     };
 
-    template <OperationType OpType_>
+    template <>
+    class DecoderTransformerTraits<OperationType::INT8> : public TransformerTraits<OperationType::INT8>
+    {
+    };
+
+    template <OperationType OpType_, OperationType QuantizationType>
     class OpenDecoder
     {
     private:
         typedef DecoderTransformerTraits<OpType_> Traits_;
-        typedef typename Traits_::DataType DataType_;
-        DecoderInitParam<DataType_> param_;
+        typedef DecoderTransformerTraits<OperationType::FP32> qkv_Traits_;
+        typedef DecoderTransformerTraits<QuantizationType> weight_Traits_;
 
-        typedef typename Traits_::AlphaBetaType AlphaBetaType_;
-        const cublasComputeType_t computeType_ = Traits_::computeType;
-        const cudaDataType_t AType_ = Traits_::AType;
-        const cudaDataType_t BType_ = Traits_::BType;
-        const cudaDataType_t CType_ = Traits_::CType;
+        typedef typename Traits_::DataType DataType_;
+        typedef typename weight_Traits_::DataType weight_DataType_;
+        DecoderInitParam<DataType_, weight_DataType_> param_;
+
         int cublasAlgo_[5];
 
         int batch_size_;
@@ -119,7 +136,7 @@ namespace tinycudallama
             }
         }
 
-        void initialize(DecoderInitParam<DataType_> param, char *buf)
+        void initialize(DecoderInitParam<DataType_, weight_DataType_> param, char *buf)
         {
 #ifndef NDEBUG
             PRINT_FUNC_NAME_();
@@ -164,8 +181,12 @@ namespace tinycudallama
 #ifndef NDEBUG
             PRINT_FUNC_NAME_();
 #endif
-            const AlphaBetaType_ alpha = 1;
-            const AlphaBetaType_ beta = 0;
+            typedef typename weight_Traits_::AlphaType weight_AlphaType;
+            typedef typename qkv_Traits_::AlphaType qkv_AlphaType;
+            const weight_AlphaType weight_alpha = 1;
+            const weight_AlphaType weight_beta = 0;
+            const qkv_AlphaType qkv_alpha = 1.0f;
+            const qkv_AlphaType qkv_beta = 0.0f;
             try
             {
                 /* masked multi-head attention */
@@ -186,43 +207,45 @@ namespace tinycudallama
                 CHECK_CUBLAS_STATUS(cublasGemmEx(param_.cublas_handle,
                                                  CUBLAS_OP_N, CUBLAS_OP_N,
                                                  n, m, k,
-                                                 &alpha,
-                                                 param_.attention.query_weight.kernel, AType_, n,
-                                                 from_tensor_int8_buf_, BType_, k,
-                                                 &beta,
-                                                 query_buf_, CType_, n,
-                                                 computeType_,
+                                                 &weight_alpha,
+                                                 param_.attention.query_weight.kernel, weight_Traits_::AType, n,
+                                                 from_tensor_int8_buf_, weight_Traits_::BType, k,
+                                                 &weight_beta,
+                                                 query_buf_, weight_Traits_::CType, n,
+                                                 weight_Traits_::computeType,
                                                  static_cast<cublasGemmAlgo_t>(cublasAlgo_[0])));
 
                 CHECK_CUBLAS_STATUS(cublasGemmEx(param_.cublas_handle,
                                                  CUBLAS_OP_N, CUBLAS_OP_N,
                                                  n, m, k,
-                                                 &alpha,
-                                                 param_.attention.key_weight.kernel, AType_, n,
-                                                 from_tensor_int8_buf_, BType_, k,
-                                                 &beta,
-                                                 key_buf_, CType_, n,
-                                                 computeType_,
+                                                 &weight_alpha,
+                                                 param_.attention.key_weight.kernel, weight_Traits_::AType, n,
+                                                 from_tensor_int8_buf_, weight_Traits_::BType, k,
+                                                 &weight_beta,
+                                                 key_buf_, weight_Traits_::CType, n,
+                                                 weight_Traits_::computeType,
                                                  static_cast<cublasGemmAlgo_t>(cublasAlgo_[0])));
 
                 CHECK_CUBLAS_STATUS(cublasGemmEx(param_.cublas_handle,
                                                  CUBLAS_OP_N, CUBLAS_OP_N,
                                                  n, m, k,
-                                                 &alpha,
-                                                 param_.attention.value_weight.kernel, AType_, n,
-                                                 from_tensor_int8_buf_, BType_, k,
-                                                 &beta,
-                                                 value_buf_, CType_, n,
-                                                 computeType_,
+                                                 &weight_alpha,
+                                                 param_.attention.value_weight.kernel, weight_Traits_::AType, n,
+                                                 from_tensor_int8_buf_, weight_Traits_::BType, k,
+                                                 &weight_beta,
+                                                 value_buf_, weight_Traits_::CType, n,
+                                                 weight_Traits_::computeType,
                                                  static_cast<cublasGemmAlgo_t>(cublasAlgo_[0])));
 
                 /**
                  * Q\K Quantized-rope-Quantized-Transpose
                  * query_buf_, key_buf_ -> query_out_buf_, key_out_buf_
                  */
-                launchQKRoteEmbeddingTranspose(query_out_buf_, key_out_buf_, query_buf_, key_buf_, from_tensor_scale_buf_, from_tensor_scale_buf_,
-                                               param_.attention.query_weight.weight_scale, param_.attention.key_weight.weight_scale,
-                                               freq_cis, batch_size_, seq_len, start_pos, total_len_, head_num_, size_per_head_, param_.stream);
+                launchQKRoteEmbeddingTranspose(query_out_buf_, key_out_buf_, query_buf_, key_buf_, from_tensor_scale_buf_,
+                                               from_tensor_scale_buf_, param_.attention.query_weight.weight_scale,
+                                               param_.attention.key_weight.weight_scale,
+                                               freq_cis, batch_size_, seq_len, start_pos, total_len_, head_num_, size_per_head_, 
+                                               param_.stream);
 
 #ifndef NDEBUG
                 cudaDeviceSynchronize();
@@ -259,23 +282,23 @@ namespace tinycudallama
                 {
                     CHECK_CUBLAS_STATUS(cublasGemmStridedBatchedEx(param_.cublas_handle, CUBLAS_OP_T, CUBLAS_OP_N,
                                                                    seq_len, seq_len, size_per_head_,
-                                                                   &alpha,
-                                                                   key_out_buf_, CUDA_R_32F, size_per_head_, seq_len * size_per_head_,
-                                                                   query_out_buf_, CUDA_R_32F, size_per_head_, seq_len * size_per_head_,
-                                                                   &beta,
-                                                                   qk_buf_, CUDA_R_32F, seq_len, seq_len * seq_len,
+                                                                   &qkv_alpha,
+                                                                   key_out_buf_, qkv_Traits_::AType, size_per_head_, seq_len * size_per_head_,
+                                                                   query_out_buf_, qkv_Traits_::BType, size_per_head_, seq_len * size_per_head_,
+                                                                   &qkv_beta,
+                                                                   qk_buf_, qkv_Traits_::CType, seq_len, seq_len * seq_len,
                                                                    batch_size_ * head_num_,
-                                                                   CUBLAS_COMPUTE_32F,
-                                                                   cublasAlgo_[1]));
+                                                                   qkv_Traits_::computeType,
+                                                                   static_cast<cublasGemmAlgo_t>(cublasAlgo_[1])));
                 }
                 else
                 { // generation 阶段，此时 qk 乘法为 gemv
                     CHECK_CUBLAS_STATUS(cublasSgemvStridedBatched(param_.cublas_handle, CUBLAS_OP_T,
                                                                   seq_len + start_pos, size_per_head_,
-                                                                  &alpha,
+                                                                  &qkv_alpha,
                                                                   key_cache_, size_per_head_, total_len_ * size_per_head_,
                                                                   query_out_buf_, 1, size_per_head_,
-                                                                  &beta,
+                                                                  &qkv_beta,
                                                                   qk_buf_, 1, size_per_head_,
                                                                   batch_size_ * head_num_));
                 }
@@ -296,23 +319,23 @@ namespace tinycudallama
                 {
                     CHECK_CUBLAS_STATUS(cublasGemmStridedBatchedEx(param_.cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N,
                                                                    size_per_head_, seq_len, seq_len,
-                                                                   &alpha,
-                                                                   value_out_fp_buf_, CUDA_R_32F, size_per_head_, seq_len * size_per_head_,
-                                                                   qk_buf_, CUDA_R_32F, seq_len, seq_len * seq_len,
-                                                                   &beta,
-                                                                   qkv_buf_, CUDA_R_32F, size_per_head_, seq_len * size_per_head_,
+                                                                   &qkv_alpha,
+                                                                   value_out_fp_buf_, qkv_Traits_::AType, size_per_head_, seq_len * size_per_head_,
+                                                                   qk_buf_, qkv_Traits_::BType, seq_len, seq_len * seq_len,
+                                                                   &qkv_beta,
+                                                                   qkv_buf_, qkv_Traits_::CType, size_per_head_, seq_len * size_per_head_,
                                                                    batch_size_ * head_num_,
-                                                                   CUBLAS_COMPUTE_32F,
-                                                                   cublasAlgo_[1]));
+                                                                   qkv_Traits_::computeType,
+                                                                   static_cast<cublasGemmAlgo_t>(cublasAlgo_[1])));
                 }
                 else
                 { // generation 阶段，此时 qk*v 乘法为 gemv
                     CHECK_CUBLAS_STATUS(cublasSgemvStridedBatched(param_.cublas_handle, CUBLAS_OP_N,
                                                                   size_per_head_, seq_len + start_pos,
-                                                                  &alpha,
+                                                                  &qkv_alpha,
                                                                   value_cache_, size_per_head_, total_len_ * size_per_head_,
                                                                   qk_buf_, 1, size_per_head_,
-                                                                  &beta,
+                                                                  &qkv_beta,
                                                                   qkv_buf_, 1, size_per_head_,
                                                                   batch_size_ * head_num_));
                 }
@@ -335,12 +358,12 @@ namespace tinycudallama
                 CHECK_CUBLAS_STATUS(cublasGemmEx(param_.cublas_handle,
                                                  CUBLAS_OP_N, CUBLAS_OP_N,
                                                  n, m, k,
-                                                 &alpha,
-                                                 param_.attention.attention_output_weight.kernel, AType_, n,
-                                                 from_tensor_int8_buf_, BType_, k,
-                                                 &beta,
-                                                 query_buf_, CType_, n,
-                                                 computeType_,
+                                                 &weight_alpha,
+                                                 param_.attention.attention_output_weight.kernel, weight_Traits_::AType, n,
+                                                 from_tensor_int8_buf_, weight_Traits_::BType, k,
+                                                 &weight_beta,
+                                                 query_buf_, weight_Traits_::CType, n,
+                                                 weight_Traits_::computeType,
                                                  static_cast<cublasGemmAlgo_t>(cublasAlgo_[0])));
 
                 /**
@@ -364,12 +387,12 @@ namespace tinycudallama
                 CHECK_CUBLAS_STATUS(cublasGemmEx(param_.cublas_handle,
                                                  CUBLAS_OP_N, CUBLAS_OP_N,
                                                  n, m, k,
-                                                 &alpha,
-                                                 param_.ffn.w1_weight.kernel, AType_, n,
-                                                 from_tensor_int8_buf_, BType_, k,
-                                                 &beta,
-                                                 query_buf_, CType_, n,
-                                                 computeType_,
+                                                 &weight_alpha,
+                                                 param_.ffn.w1_weight.kernel, weight_Traits_::AType, n,
+                                                 from_tensor_int8_buf_, weight_Traits_::BType, k,
+                                                 &weight_beta,
+                                                 query_buf_, weight_Traits_::CType, n,
+                                                 weight_Traits_::computeType,
                                                  static_cast<cublasGemmAlgo_t>(cublasAlgo_[0])));
 
                 /**
@@ -378,12 +401,12 @@ namespace tinycudallama
                 CHECK_CUBLAS_STATUS(cublasGemmEx(param_.cublas_handle,
                                                  CUBLAS_OP_N, CUBLAS_OP_N,
                                                  n, m, k,
-                                                 &alpha,
-                                                 param_.ffn.w3_weight.kernel, AType_, n,
-                                                 from_tensor_int8_buf_, BType_, k,
-                                                 &beta,
-                                                 key_buf_, CType_, n,
-                                                 computeType_,
+                                                 &weight_alpha,
+                                                 param_.ffn.w3_weight.kernel, weight_Traits_::AType, n,
+                                                 from_tensor_int8_buf_, weight_Traits_::BType, k,
+                                                 &weight_beta,
+                                                 key_buf_, weight_Traits_::CType, n,
+                                                 weight_Traits_::computeType,
                                                  static_cast<cublasGemmAlgo_t>(cublasAlgo_[0])));
 
                 /**
@@ -409,12 +432,12 @@ namespace tinycudallama
                 CHECK_CUBLAS_STATUS(cublasGemmEx(param_.cublas_handle,
                                                  CUBLAS_OP_N, CUBLAS_OP_N,
                                                  n, m, k,
-                                                 &alpha,
-                                                 param_.ffn.w2_weight.kernel, AType_, n,
-                                                 from_tensor_int8_buf_, BType_, k,
-                                                 &beta,
-                                                 value_buf_, CType_, n,
-                                                 computeType_,
+                                                 &weight_alpha,
+                                                 param_.ffn.w2_weight.kernel, weight_Traits_::AType, n,
+                                                 from_tensor_int8_buf_, weight_Traits_::BType, k,
+                                                 &weight_beta,
+                                                 value_buf_, weight_Traits_::CType, n,
+                                                 weight_Traits_::computeType,
                                                  static_cast<cublasGemmAlgo_t>(cublasAlgo_[0])));
 
                 /**
@@ -452,5 +475,8 @@ namespace tinycudallama
             ffn_inter_scale_buf_ = nullptr;
         }
     };
+
+
+    template void OpenDecoder<OperationType::FP32, OperationType::INT8>::initialize(DecoderInitParam<float, int8_t> param, char *buf);
 
 } // namespace tinycudallama

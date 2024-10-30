@@ -18,6 +18,14 @@
         "filesystem": "cpp",
         "limits": "cpp",
         "memory": "cpp",
-        "random": "cpp"
+        "random": "cpp",
+        "string_view": "cpp",
+        "__locale": "cpp",
+        "__string": "cpp",
+        "string": "cpp",
+        "*.tcc": "cpp",
+        "iosfwd": "cpp",
+        "cstdint": "cpp",
+        "cmath": "cpp"
     }
 }
