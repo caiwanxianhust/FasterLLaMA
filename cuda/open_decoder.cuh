@@ -164,6 +164,9 @@ namespace tinycudallama
 
         int getWorkspaceSize()
         {
+#ifndef NDEBUG
+            PRINT_FUNC_NAME_();
+#endif
             int buf_size = batch_size_ * max_prompt_len_ * hidden_units_;
             int work_space_size = sizeof(int8_t) * buf_size + sizeof(float) * 4 * buf_size + sizeof(int32_t) * 3 * buf_size +
                                   sizeof(float) * 2 * batch_size_ * max_prompt_len_ + sizeof(DataType_) * buf_size +
@@ -244,7 +247,7 @@ namespace tinycudallama
                 launchQKRoteEmbeddingTranspose(query_out_buf_, key_out_buf_, query_buf_, key_buf_, from_tensor_scale_buf_,
                                                from_tensor_scale_buf_, param_.attention.query_weight.weight_scale,
                                                param_.attention.key_weight.weight_scale,
-                                               freq_cis, batch_size_, seq_len, start_pos, total_len_, head_num_, size_per_head_, 
+                                               freq_cis, batch_size_, seq_len, start_pos, total_len_, head_num_, size_per_head_,
                                                param_.stream);
 
 #ifndef NDEBUG
@@ -475,7 +478,6 @@ namespace tinycudallama
             ffn_inter_scale_buf_ = nullptr;
         }
     };
-
 
     template void OpenDecoder<OperationType::FP32, OperationType::INT8>::initialize(DecoderInitParam<float, int8_t> param, char *buf);
 

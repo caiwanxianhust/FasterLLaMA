@@ -175,6 +175,9 @@ namespace tinycudallama
     void launchResNormQuantizedKernel(int8_t *output, const DataType *input, const DataType *gamma,
                                       float *norm_scale, const float eps, const int nrows, const int hidden_units, cudaStream_t stream)
     {
+#ifndef NDEBUG
+        PRINT_FUNC_NAME_();
+#endif
         assert(hidden_units % 4 == 0);
         int mem_size = sizeof(float) * hidden_units;
         resNormQuantizedKernel<DataType><<<nrows, 256, mem_size, stream>>>(output, input, gamma, norm_scale, eps, hidden_units);
@@ -677,6 +680,9 @@ namespace tinycudallama
                                         const int start_pos, const int total_len, const int head_num,
                                         const int size_per_head, cudaStream_t stream)
     {
+#ifndef NDEBUG
+        PRINT_FUNC_NAME_();
+#endif
         assert(size_per_head <= 1024);
         if (size_per_head <= 128)
         {
@@ -730,6 +736,9 @@ namespace tinycudallama
     void launchStoreKVcacheKernel(float *k_cache, float *v_cache, const float *K, const float *V, const int start_pos, const int seq_len,
                                   const int batch_size, const int head_num, const int max_seq_len, const int size_per_head, cudaStream_t stream)
     {
+#ifndef NDEBUG
+        PRINT_FUNC_NAME_();
+#endif
         assert(size_per_head <= 1024);
         dim3 block, grid;
         block.x = size_per_head / 4;
@@ -920,6 +929,9 @@ namespace tinycudallama
     void launchBlockSoftmaxKernel(float *qk, const float *attn_mask, const int batch_size, const int head_num, const int seq_len_q,
                                   const int seq_len_k, const int max_seq_len, const float scaler, cudaStream_t stream)
     {
+#ifndef NDEBUG
+        PRINT_FUNC_NAME_();
+#endif
         dim3 grid(seq_len_q, head_num, batch_size);
         dim3 block(128);
         int shared_mem_size = sizeof(float) * seq_len_k;
@@ -1033,6 +1045,9 @@ namespace tinycudallama
     void launchDequantizedVTransposeKernel(float *v_buf, const int32_t *V, const float *v_inp_scale, const float *v_weight_scale,
                                            const int batch_size, const int seq_len, const int head_num, const int size_per_head, cudaStream_t stream)
     {
+#ifndef NDEBUG
+        PRINT_FUNC_NAME_();
+#endif
         assert(size_per_head <= 1024);
         if (size_per_head <= 128)
         {
@@ -1335,6 +1350,9 @@ namespace tinycudallama
                                             float *__restrict__ attn_out_scale, const int batch_size,
                                             const int head_num, const int seq_len, const int size_per_head, cudaStream_t stream)
     {
+#ifndef NDEBUG
+        PRINT_FUNC_NAME_();
+#endif
         assert(size_per_head <= 1024);
         if (head_num <= 32 && size_per_head <= 128)
         {
@@ -1494,6 +1512,9 @@ namespace tinycudallama
     void launchDequantizedResidualResNormQuantized(int8_t *norm_out, DataType *__restrict__ ffn_tensor, const DataType *from_temsor, const int32_t *attn_out, const float *attn_out_scale,
                                                    const float *attn_weight_scale, const DataType *gamma, float *norm_scale, const float eps, const int rows, const int hidden_units, cudaStream_t stream)
     {
+#ifndef NDEBUG
+        PRINT_FUNC_NAME_();
+#endif
         assert(hidden_units % 4 == 0);
         int mem_size = hidden_units * sizeof(float);
         dequantizedResidualResNormQuantizedKernel<DataType><<<rows, 128, mem_size, stream>>>(norm_out, ffn_tensor, from_temsor, attn_out, attn_out_scale, attn_weight_scale, gamma,
@@ -1555,6 +1576,9 @@ namespace tinycudallama
     void launchDequantizedSiluMultifyQuantized(int8_t *out_buf, const int32_t *w1_ret, const float *norm_scale, const float *w1_weight_scale,
                                                const int32_t *w3_ret, const float *w3_weight_scale, float *out_scale, const int nrows, const int hidden_units, cudaStream_t stream)
     {
+#ifndef NDEBUG
+        PRINT_FUNC_NAME_();
+#endif
         assert(hidden_units % 4 == 0);
         int mem_size = sizeof(float) * hidden_units;
         dequantizedSiluMultifyQuantizedKernel<<<nrows, 128, mem_size, stream>>>(out_buf, w1_ret, norm_scale, w1_weight_scale,
@@ -1612,21 +1636,24 @@ namespace tinycudallama
                                    const float *__restrict__ inp_scale, const float *__restrict__ weight_scale, const int nrows,
                                    const int hidden_units, cudaStream_t stream)
     {
+#ifndef NDEBUG
+        PRINT_FUNC_NAME_();
+#endif
         assert(hidden_units % 2 == 0);
         dequantizedResidualKernel<<<nrows, 128, 0, stream>>>(out, from_temsor, inp, inp_scale, weight_scale, hidden_units);
     }
 
     template void launchResNormKernel(float *output, const float *input, const float *gamma, const float eps,
-                             const int m, const int n, cudaStream_t stream);
+                                      const int m, const int n, cudaStream_t stream);
 
     template void launchResNormKernel(half *output, const half *input, const half *gamma, const float eps,
-                             const int m, const int n, cudaStream_t stream);
+                                      const int m, const int n, cudaStream_t stream);
 
     template void launchResNormQuantizedKernel(int8_t *output, const float *input, const float *gamma,
-                                      float *norm_scale, const float eps, const int nrows, const int hidden_units, cudaStream_t stream);
+                                               float *norm_scale, const float eps, const int nrows, const int hidden_units, cudaStream_t stream);
 
     template void launchResNormQuantizedKernel(int8_t *output, const half *input, const half *gamma,
-                                      float *norm_scale, const float eps, const int nrows, const int hidden_units, cudaStream_t stream);
+                                               float *norm_scale, const float eps, const int nrows, const int hidden_units, cudaStream_t stream);
 
     template void launchEmbeddingLookingUpKernel(float *from_tensor, const float *embedding_table, const int *word_ids,
                                                  const int hidden_units, const int batch_size, const int seq_len, cudaStream_t stream);

@@ -1,4 +1,40 @@
 #include "decoding_sampling.h"
+#include <cstdio>
+
+
+template <typename T>
+void printVecInVec(const T *clusters, const int nrows, const int ncols, const int end_row, const int end_col, const char *str)
+{
+    printf("%s:\n[\n", str);
+    for (int i = 0; i < end_row; ++i)
+    {
+        printf("[");
+        for (int j = 0; j < end_col; ++j)
+        {
+            printf("%g  ", static_cast<float>(clusters[i * ncols + j]));
+        }
+        printf("]\n");
+    }
+    printf("]\n");
+}
+
+template <>
+void printVecInVec(const half *clusters, const int nrows, const int ncols, const int end_row, const int end_col, const char *str)
+{
+    printf("%s:\n[\n", str);
+    if (end_row >= nrows || end_col >= ncols)
+        printf("invalid arguments!!!\nend_row >= nrows or end_col >= ncols\n");
+    for (int i = 0; i < end_row; ++i)
+    {
+        printf("[");
+        for (int j = 0; j < end_col; ++j)
+        {
+            printf("%g  ", __half2float(clusters[i * ncols + j]));
+        }
+        printf("]\n");
+    }
+    printf("]\n");
+}
 
 template <typename T>
 void device_malloc(T **ptr, int size)
@@ -28,8 +64,8 @@ __global__ void initIntVecKernel(int *mat, const int length, const int max_val, 
     {
         curandState_t local_state;
         curand_init(0, tid, 0, &local_state);
-        int val = curand(&local_state);
-        mat[tid] = val % (max_val - min_val) + min_val;
+        int val = static_cast<int>(curand(&local_state) % (max_val - min_val));
+        mat[tid] = val + min_val;
     }
 }
 
@@ -138,7 +174,7 @@ void decoding_sample(const int batch_size, const int candidate_num, const float 
     device_malloc(&d_prompt_tokens_mask, max_prompt_len * batch_size);
     device_malloc(&d_decoding_resnorm_gamma, hidden_units);
     device_malloc(&d_output_weight_kernel, hidden_units * vocab_size);
-    device_malloc(&d_output_ids, batch_size);
+    device_malloc(&d_output_ids, batch_size * total_len);
     device_malloc(&d_sequence_lengths, batch_size);
 
     int *h_prompt_sequence_length = new int[batch_size];
@@ -164,6 +200,11 @@ void decoding_sample(const int batch_size, const int candidate_num, const float 
     initIntVecKernel<<<grid_size, block_size>>>(d_prompt_tokens, max_prompt_len * batch_size, vocab_size, 3);
     cudaDeviceSynchronize();
     CHECK_CUDA_ERROR(cudaGetLastError());
+
+    int *h_prompt_tokens = new int[max_prompt_len * batch_size];
+    CHECK_CUDA_ERROR(cudaMemcpy(h_prompt_tokens, d_prompt_tokens, sizeof(int) * max_prompt_len * batch_size, cudaMemcpyDeviceToHost));
+    printVecInVec(h_prompt_tokens, batch_size, max_prompt_len, batch_size, max_prompt_len, "h_prompt_tokens");
+
 
     decoding_params.cublas_handle = cublasHandle;
     decoding_params.stream = stream;
@@ -210,6 +251,27 @@ void decoding_sample(const int batch_size, const int candidate_num, const float 
            batch_size, candidate_num, probability_threshold, head_num, size_per_head, max_prompt_len, max_gen_len, decoder_layers,
            vocab_size, elapsedTime);
 
+    int *h_word_ids = new int[batch_size * total_len];
+    CHECK_CUDA_ERROR(cudaMemcpy(h_word_ids, decoding_params.output_ids, sizeof(int) * batch_size * total_len, cudaMemcpyDeviceToHost));
+    int *h_seq_lengths = new int[batch_size];
+    CHECK_CUDA_ERROR(cudaMemcpy(h_seq_lengths, d_sequence_lengths, sizeof(int) * batch_size, cudaMemcpyDeviceToHost));
+    cudaDeviceSynchronize();
+    printf("word_ids:\n[\n");
+    for (int i=0; i<batch_size; ++i) {
+        printf("[");
+        for (int j=0; j<h_seq_lengths[i]; ++j) {
+            printf("%d\t", h_word_ids[j * batch_size + i]);
+        }
+        printf("]\n");
+    }
+    printf("]\n");
+
+    printVecInVec(h_prompt_tokens, batch_size, max_prompt_len, batch_size, max_prompt_len, "h_prompt_tokens");
+
+    printVecInVec(h_prompt_tokens_mask, batch_size, max_prompt_len, batch_size, max_prompt_len, "h_prompt_tokens_mask");
+
+
+
     delete[] param;
     delete[] h_prompt_sequence_length;
     delete[] h_prompt_tokens_mask;
@@ -225,8 +287,8 @@ int main()
     printf("Device %s\n", prop.name);
 
     const int batch_size = 4;
-    const int candidate_num = 4;
-    const float probability_threshold = 0.0;
+    const int candidate_num = 0;
+    const float probability_threshold = 0.00001;
     const int head_num = 8;
     const int size_per_head = 128;
     const int vocab_size = 200;

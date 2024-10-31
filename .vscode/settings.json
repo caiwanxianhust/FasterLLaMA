@@ -26,6 +26,7 @@
         "*.tcc": "cpp",
         "iosfwd": "cpp",
         "cstdint": "cpp",
-        "cmath": "cpp"
+        "cmath": "cpp",
+        "sstream": "cpp"
     }
 }

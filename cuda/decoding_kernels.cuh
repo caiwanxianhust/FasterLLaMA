@@ -39,7 +39,7 @@ namespace tinycudallama
 
     template <typename T>
     void launchEmbeddingLookupKernel(T *__restrict__ from_tensor, const T *__restrict__ embedding_table, const int *__restrict__ word_ids,
-                                     const int batch_size, const int cur_seq_len, const int seq_len, const int hidden_units,
+                                     const int batch_size, const int cur_seq_len, const int hidden_units,
                                      cudaStream_t stream = 0);
 
     /** 取 logits[:, -1, :] 存入 step_logits，并顺便进行停止符判断

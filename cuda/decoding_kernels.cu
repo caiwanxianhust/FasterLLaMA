@@ -19,6 +19,9 @@ namespace tinycudallama
     void launchTopKSamplingInitKernel(bool *__restrict__ finished, int *__restrict__ sequence_length,
                                       const int batch_size, cudaStream_t stream)
     {
+#ifndef NDEBUG
+        PRINT_FUNC_NAME_();
+#endif
         dim3 grid(1);
         dim3 block(min(1024, batch_size));
         topKSamplingInitKernel<<<grid, block, 0, stream>>>(finished, sequence_length, batch_size);
@@ -61,6 +64,9 @@ namespace tinycudallama
                                         int *__restrict__ topp_id_val_buf, int *__restrict__ topp_offset_buf,
                                         const int batch_size, const int vocab_size, cudaStream_t stream)
     {
+#ifndef NDEBUG
+        PRINT_FUNC_NAME_();
+#endif
         topPInitializationKernel<<<32, 512, 0, stream>>>(finished, sequence_length, topp_id_val_buf, topp_offset_buf,
                                                          batch_size, vocab_size);
     }
@@ -71,21 +77,29 @@ namespace tinycudallama
     {
         const int token_id = blockIdx.x;
         const int batch_id = blockIdx.y;
+        int write_pos, lookup_pos;
         for (int tid = threadIdx.x; tid < hidden_units; tid += blockDim.x)
         {
-            int write_pos = tid + token_id * hidden_units + batch_id * gridDim.x * hidden_units;
+            write_pos = tid + token_id * hidden_units + batch_id * gridDim.x * hidden_units;
+            lookup_pos = word_ids[batch_id * gridDim.x + token_id] * hidden_units + tid;
             // 1. lookup the table
             // 2. multiply hidden_dim**0.5
-            from_tensor[write_pos] = embedding_table[word_ids[batch_id * gridDim.x + token_id] * hidden_units + tid] *
-                                     (T)sqrtf(float(hidden_units));
+            // if (lookup_pos < 0) {
+            //     printf("batch_id: %d  token_id: %d  word_id: %d\n", batch_id, token_id, word_ids[batch_id * gridDim.x + token_id]);
+            // }
+
+            from_tensor[write_pos] = embedding_table[lookup_pos] * (T)sqrtf(float(hidden_units));
         }
     }
 
     template <typename T>
     void launchEmbeddingLookupKernel(T *__restrict__ from_tensor, const T *__restrict__ embedding_table, const int *__restrict__ word_ids,
-                                     const int batch_size, const int cur_seq_len, const int seq_len, const int hidden_units,
+                                     const int batch_size, const int cur_seq_len, const int hidden_units,
                                      cudaStream_t stream)
     {
+#ifndef NDEBUG
+        PRINT_FUNC_NAME_();
+#endif
         dim3 grid(cur_seq_len, batch_size);
         dim3 block(256);
         embeddingLookupKernel<T><<<grid, block, 0, stream>>>(from_tensor, embedding_table, word_ids, hidden_units);
@@ -120,6 +134,9 @@ namespace tinycudallama
                                           const bool *__restrict__ finished, const int batch_size, const int seq_len,
                                           const int vocab_size, cudaStream_t stream)
     {
+#ifndef NDEBUG
+        PRINT_FUNC_NAME_();
+#endif
         dim3 grid(batch_size);
         dim3 block(min(vocab_size, 1024));
         /*n is the vocab_size, e.g., 30000, 7000.... vocab_size is usually very big. */
@@ -140,7 +157,7 @@ namespace tinycudallama
         if (threadIdx.x < batch_size)
         {
             // prompt phase, next_token[:] = prompt_tokens[:, cur_pos]
-            if (prompt_tokens_mask[threadIdx.x * max_prompt_seq_len + cur_pos])
+            if (cur_pos < max_prompt_seq_len && prompt_tokens_mask[threadIdx.x * max_prompt_seq_len + cur_pos])
             {
                 ids[threadIdx.x] = prompt_tokens[threadIdx.x * max_prompt_seq_len + cur_pos];
             }
@@ -231,6 +248,9 @@ namespace tinycudallama
                                   const int cur_pos, const int max_prompt_seq_len, int random_num, const int batch_size,
                                   const int vocab_size, const int candidate_num, const int end_id, cudaStream_t stream)
     {
+#ifndef NDEBUG
+        PRINT_FUNC_NAME_();
+#endif
         int local_block_size = 256;
         switch (candidate_num)
         {
@@ -305,6 +325,9 @@ namespace tinycudallama
                                             const bool *__restrict__ finished, const int seq_len, const int end_id,
                                             const int batch_size, const int vocab_size, cudaStream_t stream)
     {
+#ifndef NDEBUG
+        PRINT_FUNC_NAME_();
+#endif
         dim3 grid(batch_size);
         dim3 block(min(vocab_size, 1024));
         /*n is the vocab_size, e.g., 30000, 7000.... vocab_size is usually very big. */
@@ -325,7 +348,7 @@ namespace tinycudallama
         if (threadIdx.x < batch_size)
         {
             // prompt phase, next_token[:] = prompt_tokens[:, cur_pos]
-            if (prompt_tokens_mask[threadIdx.x * max_prompt_seq_len + cur_pos])
+            if (cur_pos < max_prompt_seq_len && prompt_tokens_mask[threadIdx.x * max_prompt_seq_len + cur_pos])
             {
                 ids[threadIdx.x] = prompt_tokens[threadIdx.x * max_prompt_seq_len + cur_pos];
             }
@@ -364,6 +387,9 @@ namespace tinycudallama
                                       const int batch_size,
                                       const int vocab_size)
     {
+#ifndef NDEBUG
+        PRINT_FUNC_NAME_();
+#endif
         void *d_temp_storage = NULL;
         size_t temp_storage_bytes = 0;
 
@@ -387,7 +413,9 @@ namespace tinycudallama
                                   const int random_num, int *__restrict__ output_ids, int *__restrict__ sequence_length, const int end_id,
                                   const int batch_size, const int vocab_size, const float probability_threshold, cudaStream_t stream)
     {
-
+#ifndef NDEBUG
+        PRINT_FUNC_NAME_();
+#endif
         cub::DeviceSegmentedRadixSort::SortPairsDescending(temp_storage,
                                                            temp_storage_size,
                                                            logits_probs,
@@ -424,7 +452,7 @@ namespace tinycudallama
 
     template void launchEmbeddingLookupKernel(float *__restrict__ from_tensor, const float *__restrict__ embedding_table,
                                               const int *__restrict__ word_ids, const int batch_size, const int cur_seq_len,
-                                              const int seq_len, const int hidden_units, cudaStream_t stream);
+                                              const int hidden_units, cudaStream_t stream);
 
     template void launchTopKSamplingKernel(float *__restrict__ log_probs, int *__restrict__ topk_tmp_id_buf,
                                            float *__restrict__ topk_tmp_val_buf, int *__restrict__ ids,
