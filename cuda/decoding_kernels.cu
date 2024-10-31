@@ -450,6 +450,27 @@ namespace tinycudallama
                                                          batch_size, vocab_size, random_num, probability_threshold, end_id);
     }
 
+    __global__ void removePromptTokenKernel(int *__restrict__ gen_ids, const int *__restrict__ word_ids_buf,
+                                            const int *__restrict__ sequence_length, const int *__restrict__ prompt_seq_lengths,
+                                            const int min_prompt_seq_len, const int batch_size, const int total_len)
+    {
+        const int offset = prompt_seq_lengths[blockIdx.x] - min_prompt_seq_len;
+        for (int tid = threadIdx.x; tid < sequence_length[blockIdx.x]; tid += blockDim.x)
+        {
+            gen_ids[blockIdx.x * total_len + tid] = word_ids_buf[(offset + tid) * batch_size + blockIdx.x];
+            // printf("batch_id: %d tid: %d  word_id: %d\n", blockIdx.x, tid, gen_ids[blockIdx.x * total_len + tid]);
+        }
+    }
+
+    void launchRemovePromptTokenKernel(int *__restrict__ gen_ids, const int *__restrict__ word_ids_buf, const int *__restrict__ sequence_length,
+                                       const int *__restrict__ prompt_seq_lengths, const int min_prompt_seq_len, const int batch_size, const int total_len, cudaStream_t stream)
+    {
+#ifndef NDEBUG
+        PRINT_FUNC_NAME_();
+#endif
+        removePromptTokenKernel<<<batch_size, 256, 0, stream>>>(gen_ids, word_ids_buf, sequence_length, prompt_seq_lengths, min_prompt_seq_len, batch_size, total_len);
+    }
+
     template void launchEmbeddingLookupKernel(float *__restrict__ from_tensor, const float *__restrict__ embedding_table,
                                               const int *__restrict__ word_ids, const int batch_size, const int cur_seq_len,
                                               const int hidden_units, cudaStream_t stream);

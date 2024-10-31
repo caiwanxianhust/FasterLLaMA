@@ -93,7 +93,7 @@ namespace tinycudallama
 #define PRINT_FUNC_NAME_()                                              \
     do                                                                  \
     {                                                                   \
-        std::cout << "[FT][CALL] " << __FUNCTION__ << " " << std::endl; \
+        std::cout << "[FL][CALL] " << __FUNCTION__ << " " << std::endl; \
     } while (0)
 
 #define CHECK_CUDA_ERROR(call)                             \

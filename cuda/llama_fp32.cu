@@ -247,7 +247,7 @@ void decoding_sample(const int batch_size, const int candidate_num, const float 
 
     printf("Time = %g ms.\n", elapsedTime);
     printf("[INFO] batch_size %d topk %d topp %f head_num %d size_per_head %d max_prompt_len %d max_gen_len %d decoder_layers"
-           " %d vocab_size %d FT-CPP-decoding-sampling-time %.2f ms\n",
+           " %d vocab_size %d FL-CPP-decoding-sampling-time %.2f ms\n",
            batch_size, candidate_num, probability_threshold, head_num, size_per_head, max_prompt_len, max_gen_len, decoder_layers,
            vocab_size, elapsedTime);
 
@@ -259,30 +259,11 @@ void decoding_sample(const int batch_size, const int candidate_num, const float 
 
     printVecInVec(h_seq_lengths, 1, batch_size, 1, batch_size, "h_seq_lengths");
 
-    int *h_gen_ids = new int[batch_size * total_len];
-    for (int i = 0; i<batch_size; ++i) {
-        int offset = h_prompt_sequence_length[i] - min_prompt_seq_len;
-        for (int j = 0; j<h_seq_lengths[i]; ++j) {
-            h_gen_ids[i * total_len + j] = h_word_ids[(offset + j) * batch_size + i];
-        }
-    }
-
     printf("word_ids:\n[\n");
-    for (int i=0; i<batch_size; ++i) {
-        int offset = h_prompt_sequence_length[i] - min_prompt_seq_len;
-        printf("[");
-        for (int j=0; j<h_seq_lengths[i] + offset; ++j) {
-            printf("%d\t", h_word_ids[j * batch_size + i]);
-        }
-        printf("]\n");
-    }
-    printf("]\n");
-
-    printf("gen_ids:\n[\n");
     for (int i=0; i<batch_size; ++i) {
         printf("[");
         for (int j=0; j<h_seq_lengths[i]; ++j) {
-            printf("%d\t", h_gen_ids[i * total_len + j]);
+            printf("%d\t", h_word_ids[i * total_len + j]);
         }
         printf("]\n");
     }

@@ -169,4 +169,12 @@ namespace tinycudallama
                                   const bool *__restrict__ prompt_tokens_mask, const int cur_pos, const int max_prompt_seq_len,
                                   const int random_num, int *__restrict__ output_ids, int *__restrict__ sequence_length, const int end_id,
                                   const int batch_size, const int vocab_size, const float probability_threshold, cudaStream_t stream = 0);
+
+    __global__ void removePromptTokenKernel(int *__restrict__ gen_ids, const int *__restrict__ word_ids_buf,
+                                            const int *__restrict__ sequence_length, const int *__restrict__ prompt_seq_lengths,
+                                            const int min_prompt_seq_len, const int batch_size, const int total_len);
+
+    void launchRemovePromptTokenKernel(int *__restrict__ gen_ids, const int *__restrict__ word_ids_buf, const int *__restrict__ sequence_length,
+                                       const int *__restrict__ prompt_seq_lengths, const int min_prompt_seq_len, const int batch_size,
+                                       const int total_len, cudaStream_t stream = 0);
 }

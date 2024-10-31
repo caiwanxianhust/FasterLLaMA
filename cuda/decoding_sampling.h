@@ -155,10 +155,10 @@ namespace tinycudallama
             int decoder_normed_result_buf_size = args_.batch_size_ * args_.max_prompt_len_ * args_.hidden_units_;    // type T
             int cache_size = args_.batch_size_ * (args_.max_prompt_len_ + args_.max_gen_len_) * args_.hidden_units_; // type float
 
-            int logits_buf_size = args_.batch_size_ * args_.max_prompt_len_ * args_.vocab_size_; // type float
-            int step_logits_buf_size = args_.batch_size_ * args_.vocab_size_;                    // type float
-            int word_ids_buf_size = args_.batch_size_;                                           // type int
-            int finished_buf_size = args_.batch_size_;                                           // type bool
+            int logits_buf_size = args_.batch_size_ * args_.max_prompt_len_ * args_.vocab_size_;      // type float
+            int step_logits_buf_size = args_.batch_size_ * args_.vocab_size_;                         // type float
+            int word_ids_buf_size = args_.batch_size_ * (args_.max_prompt_len_ + args_.max_gen_len_); // type int
+            int finished_buf_size = args_.batch_size_;                                                // type bool
 
             int topk_ids_buf_size = args_.batch_size_ * args_.candidate_num_; // type int
             int topk_val_buf_size = args_.batch_size_ * args_.candidate_num_; // type float
@@ -198,11 +198,11 @@ namespace tinycudallama
             printf("int_buf_size : %d\n", int_buf_size);
 
             size_t d_mem_size = sizeof(DataType_) * datatype_buf_size +
-                sizeof(float) * float_buf_size +
-                sizeof(int) * int_buf_size +
-                sizeof(bool) * finished_buf_size +
-                sizeof(char) * decoder_workspace_size +
-                args_.temp_storage_size_;
+                                sizeof(float) * float_buf_size +
+                                sizeof(int) * int_buf_size +
+                                sizeof(bool) * finished_buf_size +
+                                sizeof(char) * decoder_workspace_size +
+                                args_.temp_storage_size_;
 
             printf("the decoding sampling device memory : %zu GB\n", d_mem_size / 1024 / 1024);
 
@@ -334,7 +334,8 @@ namespace tinycudallama
                 {
                     printf("step: %d tokens embedding lookup\n", step);
                     // generation phase, word_ids_buf_ is embedded to from_tensor which shape is [batch_size, hidden_units]
-                    launchEmbeddingLookupKernel(from_tensor_[0], decoding_params.embedding_table, word_ids_buf_,
+                    launchEmbeddingLookupKernel(from_tensor_[0], decoding_params.embedding_table,
+                                                word_ids_buf_ + (step - 2) * args_.batch_size_,
                                                 args_.batch_size_, 1, args_.hidden_units_, decoding_params.stream);
                 }
 
@@ -423,7 +424,7 @@ namespace tinycudallama
 #endif
 
                     launchTopKSamplingKernel(step_logits_buf_, topk_ids_buf_, topk_val_buf_,
-                                             decoding_params.output_ids + (step - 1) * args_.batch_size_, decoding_params.sequence_length,
+                                             word_ids_buf_ + (step - 1) * args_.batch_size_, decoding_params.sequence_length,
                                              finished_buf_, decoding_params.prompt_tokens, decoding_params.prompt_tokens_mask,
                                              cur_pos, max_prompt_seq_len,
                                              cur_pos, // used as a random seed
@@ -450,7 +451,7 @@ namespace tinycudallama
                                              topp_offset_buf_, temp_storage_, args_.temp_storage_size_, finished_buf_, decoding_params.prompt_tokens,
                                              decoding_params.prompt_tokens_mask, cur_pos, max_prompt_seq_len,
                                              cur_pos, // used as a random seed
-                                             decoding_params.output_ids + (step - 1) * args_.batch_size_, decoding_params.sequence_length,
+                                             word_ids_buf_ + (step - 1) * args_.batch_size_, decoding_params.sequence_length,
                                              args_.end_id_, args_.batch_size_, args_.vocab_size_, args_.probability_threshold_,
                                              decoding_params.stream);
 
@@ -458,9 +459,9 @@ namespace tinycudallama
                     cudaDeviceSynchronize();
                     CHECK_CUDA_ERROR(cudaGetLastError());
 #endif
-                }   
+                }
 
-                word_ids_buf_ = decoding_params.output_ids + (step - 1) * args_.batch_size_;
+                // word_ids_buf_ = decoding_params.output_ids + (step - 1) * args_.batch_size_;
                 prev_pos = cur_pos;
 
 #ifndef NDEBUG
@@ -476,12 +477,23 @@ namespace tinycudallama
                 {
                     sum += h_finished_buf_[i] ? 1 : 0;
                 }
-                if (sum == args_.batch_size_) {
+                if (sum == args_.batch_size_)
+                {
                     printf("the batch stopped\n");
                     break;
                 }
-                    
             }
+
+            /**
+             * word_ids_buf_ -> output_ids, remove the token in the prompt section
+             */
+            launchRemovePromptTokenKernel(decoding_params.output_ids, word_ids_buf_, decoding_params.sequence_length,
+                                          decoding_params.prompt_sequence_length, decoding_params.min_prompt_seq_len,
+                                          args_.batch_size_, args_.max_prompt_len_ + args_.max_gen_len_, decoding_params.stream);
+#ifndef NDEBUG
+            cudaDeviceSynchronize();
+            CHECK_CUDA_ERROR(cudaGetLastError());
+#endif
         }
 
         virtual ~DecodingSampling()
