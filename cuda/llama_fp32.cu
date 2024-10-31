@@ -253,14 +253,36 @@ void decoding_sample(const int batch_size, const int candidate_num, const float 
 
     int *h_word_ids = new int[batch_size * total_len];
     CHECK_CUDA_ERROR(cudaMemcpy(h_word_ids, decoding_params.output_ids, sizeof(int) * batch_size * total_len, cudaMemcpyDeviceToHost));
+
     int *h_seq_lengths = new int[batch_size];
     CHECK_CUDA_ERROR(cudaMemcpy(h_seq_lengths, d_sequence_lengths, sizeof(int) * batch_size, cudaMemcpyDeviceToHost));
-    cudaDeviceSynchronize();
+
+    printVecInVec(h_seq_lengths, 1, batch_size, 1, batch_size, "h_seq_lengths");
+
+    int *h_gen_ids = new int[batch_size * total_len];
+    for (int i = 0; i<batch_size; ++i) {
+        int offset = h_prompt_sequence_length[i] - min_prompt_seq_len;
+        for (int j = 0; j<h_seq_lengths[i]; ++j) {
+            h_gen_ids[i * total_len + j] = h_word_ids[(offset + j) * batch_size + i];
+        }
+    }
+
     printf("word_ids:\n[\n");
+    for (int i=0; i<batch_size; ++i) {
+        int offset = h_prompt_sequence_length[i] - min_prompt_seq_len;
+        printf("[");
+        for (int j=0; j<h_seq_lengths[i] + offset; ++j) {
+            printf("%d\t", h_word_ids[j * batch_size + i]);
+        }
+        printf("]\n");
+    }
+    printf("]\n");
+
+    printf("gen_ids:\n[\n");
     for (int i=0; i<batch_size; ++i) {
         printf("[");
         for (int j=0; j<h_seq_lengths[i]; ++j) {
-            printf("%d\t", h_word_ids[j * batch_size + i]);
+            printf("%d\t", h_gen_ids[i * total_len + j]);
         }
         printf("]\n");
     }
@@ -288,7 +310,7 @@ int main()
 
     const int batch_size = 4;
     const int candidate_num = 0;
-    const float probability_threshold = 0.00001;
+    const float probability_threshold = 0.8;
     const int head_num = 8;
     const int size_per_head = 128;
     const int vocab_size = 200;
