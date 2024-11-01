@@ -10,10 +10,7 @@ namespace tinycudallama
     class DecodingInitParam
     {
     public:
-        float *embedding_table;
-        float *embedding_kernel;
-        float *embedding_bias;
-
+        T *embedding_table;
         float *freq_cis;
 
         // the length of tokens in the batch. [batch_size, ]
@@ -27,7 +24,7 @@ namespace tinycudallama
 
         ResNormWeight<T> decodingnorm;
 
-        DenseWeight<T, float> output_weight;
+        DenseWeight<T, T> output_weight;
 
         int *output_ids;
         int *sequence_length;

@@ -46,7 +46,7 @@ namespace tinycudallama
         int from_tensor_size = args_.batch_size_ * args_.max_prompt_len_ * args_.hidden_units_; // type T
         int decoder_workspace_size = decoder_->getWorkspaceSize();
 #ifndef NDEBUG
-        printf("[FL][INFO] the decoder workspace size: %d\n", decoder_workspace_size / 1024 / 1024);
+        printf("[FL][INFO] the decoder workspace size: %d GB\n", decoder_workspace_size / 1024 / 1024);
 #endif
         int decoder_normed_result_buf_size = args_.batch_size_ * args_.max_prompt_len_ * args_.hidden_units_;    // type T
         int cache_size = args_.batch_size_ * (args_.max_prompt_len_ + args_.max_gen_len_) * args_.hidden_units_; // type float
@@ -386,6 +386,10 @@ namespace tinycudallama
     }
 
     template class DecodingSampling<OperationType::FP32>;
+
+    template class DecodingSampling<OperationType::FP16>;
+
     template class DecodingInitParam<float>;
 
+    template class DecodingInitParam<half>;
 }

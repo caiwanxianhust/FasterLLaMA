@@ -69,6 +69,10 @@ namespace tinycudallama
     __global__ void embeddingLookupKernel(T *__restrict__ from_tensor, const T *__restrict__ embedding_table,
                                           const int *__restrict__ word_ids, const int hidden_units);
 
+    template <>
+    __global__ void embeddingLookupKernel(half *__restrict__ from_tensor, const half *__restrict__ embedding_table,
+                                          const int *__restrict__ word_ids, const int hidden_units);
+
     template <typename T>
     void launchEmbeddingLookupKernel(T *__restrict__ from_tensor, const T *__restrict__ embedding_table, const int *__restrict__ word_ids,
                                      const int batch_size, const int cur_seq_len, const int hidden_units,

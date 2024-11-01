@@ -216,11 +216,24 @@ namespace tinycudallama
             lookup_pos = word_ids[batch_id * gridDim.x + token_id] * hidden_units + tid;
             // 1. lookup the table
             // 2. multiply hidden_dim**0.5
-            // if (lookup_pos < 0) {
-            //     printf("batch_id: %d  token_id: %d  word_id: %d\n", batch_id, token_id, word_ids[batch_id * gridDim.x + token_id]);
-            // }
-
             from_tensor[write_pos] = embedding_table[lookup_pos] * (T)sqrtf(float(hidden_units));
+        }
+    }
+
+    template <>
+    __global__ void embeddingLookupKernel(half *__restrict__ from_tensor, const half *__restrict__ embedding_table,
+                                          const int *__restrict__ word_ids, const int hidden_units)
+    {
+        const int token_id = blockIdx.x;
+        const int batch_id = blockIdx.y;
+        int write_pos, lookup_pos;
+        for (int tid = threadIdx.x; tid < hidden_units; tid += blockDim.x)
+        {
+            write_pos = tid + token_id * hidden_units + batch_id * gridDim.x * hidden_units;
+            lookup_pos = word_ids[batch_id * gridDim.x + token_id] * hidden_units + tid;
+            // 1. lookup the table
+            // 2. multiply hidden_dim**0.5
+            from_tensor[write_pos] = __float2half(__half2float(embedding_table[lookup_pos]) * sqrtf(float(hidden_units)));
         }
     }
 
@@ -610,6 +623,10 @@ namespace tinycudallama
                                       const int m, const int n, cudaStream_t stream);
 
     template void launchEmbeddingLookupKernel(float *__restrict__ from_tensor, const float *__restrict__ embedding_table,
+                                              const int *__restrict__ word_ids, const int batch_size, const int cur_seq_len,
+                                              const int hidden_units, cudaStream_t stream);
+    
+    template void launchEmbeddingLookupKernel(half *__restrict__ from_tensor, const half *__restrict__ embedding_table,
                                               const int *__restrict__ word_ids, const int batch_size, const int cur_seq_len,
                                               const int hidden_units, cudaStream_t stream);
 

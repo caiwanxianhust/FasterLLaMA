@@ -317,7 +317,7 @@ int main()
     const int decoder_layers = 4;
     const int ffn_hidden_units = 64 * 2;
 
-    decoding_sample<float>(batch_size, candidate_num, probability_threshold, head_num, size_per_head, vocab_size,
+    decoding_sample<half>(batch_size, candidate_num, probability_threshold, head_num, size_per_head, vocab_size,
                            max_prompt_len, max_gen_len, decoder_layers, ffn_hidden_units);
 
     return 0;

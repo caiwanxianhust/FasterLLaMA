@@ -67,7 +67,8 @@ namespace tinycudallama
      * freq_cis_: [max_prompt_len_, size_per_head]
      */
     template <OperationType OpType_, OperationType QuantizationType>
-    void OpenDecoder<OpType_, QuantizationType>::forward(const DataType_ *from_tensor, const float *freq_cis, float *key_cache_, float *value_cache_, int ffn_hidden_units,
+    void OpenDecoder<OpType_, QuantizationType>::forward(const DataType_ *from_tensor, const float *freq_cis, float *key_cache_, 
+    float *value_cache_, int ffn_hidden_units,
                                                          DataType_ *decoder_output, const int start_pos, const int seq_len)
     {
 #ifndef NDEBUG
@@ -370,6 +371,10 @@ namespace tinycudallama
 
     template class OpenDecoder<OperationType::FP32, OperationType::INT8>;
 
+    template class OpenDecoder<OperationType::FP16, OperationType::INT8>;
+
     template class DecoderInitParam<float, int8_t>;
+
+    template class DecoderInitParam<half, int8_t>;
 
 } // namespace tinycudallama
