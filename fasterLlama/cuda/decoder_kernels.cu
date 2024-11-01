@@ -610,24 +610,55 @@ namespace tinycudallama
         cache_ptr[threadIdx.x] = data_ptr[threadIdx.x];
     }
 
+    /**
+     * grid: [seq_len, head_num, batch_size * 2]  block(size_per_head)
+     * k_cache v_cache: [batch_size, head_num, max_seq_len, size_per_head]
+     * K V : [batch_size, head_num, seq_len, size_per_head]
+     */
+    __global__ void storeKVcacheBlockKernel(float *__restrict__ k_cache, float *__restrict__ v_cache, const float *__restrict__ K,
+                                            const float *__restrict__ V, const int start_pos, const int seq_len, const int batch_size, const int head_num,
+                                            const int max_seq_len, const int size_per_head)
+    {
+        const int kv_id = blockIdx.z / batch_size;
+        const int batch_id = blockIdx.z % batch_size;
+        const int head_id = blockIdx.y;
+        const int seq_id = blockIdx.x;
+        const int offset = batch_id * head_num * seq_len * size_per_head + head_id * seq_len * size_per_head + seq_id * size_per_head;
+        const int cache_offset = batch_id * head_num * max_seq_len * size_per_head + head_id * max_seq_len * size_per_head +
+                                 (start_pos + seq_id) * size_per_head;
+        float *cache_ptr = (kv_id == 0) ? (k_cache + cache_offset) : (v_cache + cache_offset);
+        const float *data_ptr = (kv_id == 0) ? (const float *)(K + offset) : (const float *)(V + offset);
+        cache_ptr[threadIdx.x] = data_ptr[threadIdx.x];
+    }
+
     void launchStoreKVcacheKernel(float *k_cache, float *v_cache, const float *K, const float *V, const int start_pos, const int seq_len,
                                   const int batch_size, const int head_num, const int max_seq_len, const int size_per_head, cudaStream_t stream)
     {
 #ifndef NDEBUG
         PRINT_FUNC_NAME_();
 #endif
-        assert(size_per_head <= 1024);
+        assert(size_per_head <= 1024 && size_per_head % 32 == 0);
         dim3 block, grid;
-        block.x = size_per_head / 4;
-        assert(block.x >= 1);
-        block.y = 256 / block.x;
-        grid.x = seq_len;
-        grid.y = head_num / block.y;
-        assert(grid.y >= 1);
-        grid.z = batch_size * 2;
-
-        storeKVcacheKernel<<<grid, block, 0, stream>>>(k_cache, v_cache, K, V, start_pos, seq_len, batch_size, head_num, max_seq_len,
-                                                       size_per_head);
+        if (size_per_head >= 128)
+        {
+            block.x = size_per_head / 4;
+            block.y = 256 / block.x;
+            grid.x = seq_len;
+            assert(grid.y >= 1);
+            grid.y = head_num / block.y;
+            grid.z = batch_size * 2;
+            storeKVcacheKernel<<<grid, block, 0, stream>>>(k_cache, v_cache, K, V, start_pos, seq_len, batch_size, head_num, max_seq_len,
+                                                           size_per_head);
+        }
+        else
+        {
+            grid.x = seq_len;
+            grid.y = head_num;
+            grid.z = batch_size * 2;
+            block.x = size_per_head;
+            storeKVcacheBlockKernel<<<grid, block, 0, stream>>>(k_cache, v_cache, K, V, start_pos, seq_len, batch_size, head_num, max_seq_len,
+                                                                size_per_head);
+        }
     }
 
     /**

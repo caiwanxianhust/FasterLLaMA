@@ -165,6 +165,10 @@ namespace tinycudallama
                                         const float *__restrict__ V, const int start_pos, const int seq_len, const int batch_size, const int head_num,
                                         const int max_seq_len, const int size_per_head);
 
+     __global__ void storeKVcacheBlockKernel(float *__restrict__ k_cache, float *__restrict__ v_cache, const float *__restrict__ K,
+                                             const float *__restrict__ V, const int start_pos, const int seq_len, const int batch_size, const int head_num,
+                                             const int max_seq_len, const int size_per_head);
+
      void launchStoreKVcacheKernel(float *k_cache, float *v_cache, const float *K, const float *V, const int start_pos, const int seq_len,
                                    const int batch_size, const int head_num, const int max_seq_len, const int size_per_head,
                                    cudaStream_t stream = 0);
