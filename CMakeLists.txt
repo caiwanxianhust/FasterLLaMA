@@ -20,6 +20,7 @@ include_directories(
 
 message("-- Assign include directories (include_directories=${COMMON_HEADER_DIRS})")
 
+add_definitions(-DNDEBUG)
 
 add_subdirectory(fasterLlama)
 add_subdirectory(samples)

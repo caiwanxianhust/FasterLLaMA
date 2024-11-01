@@ -7,7 +7,6 @@
 #include <cuda_fp16.h>
 #include <utils.h>
 
-
 template <typename T>
 void printVecInVec(const T *clusters, const int nrows, const int ncols, const int end_row, const int end_col, const char *str)
 {
@@ -62,6 +61,13 @@ void device_malloc(half **ptr, int size)
         tmp[i] = __float2half((float)rand() / (RAND_MAX + 1.0) * 0.02);
     CHECK_CUDA_ERROR(cudaMemcpy(*ptr, tmp, sizeof(half) * size, cudaMemcpyHostToDevice));
     delete[] tmp;
+}
+
+template <typename T>
+void device_free(T *ptr)
+{
+    CHECK_CUDA_ERROR(cudaFree(ptr));
+    return;
 }
 
 template <typename T>
@@ -159,7 +165,7 @@ void decoding_sample(const int batch_size, const int candidate_num, const float 
         param[i].attention.key_weight.kernel = d_self_K_kernel;
         param[i].attention.key_weight.weight_scale = d_self_K_kernel_scale;
         param[i].attention.value_weight.kernel = d_self_V_kernel;
-        param[i].attention.value_weight.weight_scale = d_self_Q_kernel_scale;
+        param[i].attention.value_weight.weight_scale = d_self_V_kernel_scale;
         param[i].attention.attention_output_weight.kernel = d_self_output_kernel;
         param[i].attention.attention_output_weight.weight_scale = d_self_output_kernel_scale;
         param[i].ffn_resnorm.gamma = d_ffn_resnorm_gamma;
@@ -222,7 +228,6 @@ void decoding_sample(const int batch_size, const int candidate_num, const float 
     CHECK_CUDA_ERROR(cudaMemcpy(h_prompt_tokens, d_prompt_tokens, sizeof(int) * max_prompt_len * batch_size, cudaMemcpyDeviceToHost));
     printVecInVec(h_prompt_tokens, batch_size, max_prompt_len, batch_size, max_prompt_len, "h_prompt_tokens");
 
-
     decoding_params.cublas_handle = cublasHandle;
     decoding_params.stream = stream;
     decoding_params.embedding_table = d_embedding_table;
@@ -277,9 +282,11 @@ void decoding_sample(const int batch_size, const int candidate_num, const float 
     printVecInVec(h_seq_lengths, 1, batch_size, 1, batch_size, "h_seq_lengths");
 
     printf("word_ids:\n[\n");
-    for (int i=0; i<batch_size; ++i) {
+    for (int i = 0; i < batch_size; ++i)
+    {
         printf("[");
-        for (int j=0; j<h_seq_lengths[i]; ++j) {
+        for (int j = 0; j < h_seq_lengths[i]; ++j)
+        {
             printf("%d\t", h_word_ids[i * total_len + j]);
         }
         printf("]\n");
@@ -290,11 +297,43 @@ void decoding_sample(const int batch_size, const int candidate_num, const float 
 
     printVecInVec(h_prompt_tokens_mask, batch_size, max_prompt_len, batch_size, max_prompt_len, "h_prompt_tokens_mask");
 
+    device_free(param[0].attn_mask);
+    for (int i = 0; i < decoder_layers; ++i)
+    {
+        device_free(param[i].attn_resnorm.gamma);
+        device_free(param[i].attention.query_weight.kernel);
+        device_free(param[i].attention.query_weight.weight_scale);
+        device_free(param[i].attention.key_weight.kernel);
+        device_free(param[i].attention.key_weight.weight_scale);
+        device_free(param[i].attention.value_weight.kernel);
+        device_free(param[i].attention.value_weight.weight_scale);
+        device_free(param[i].attention.attention_output_weight.kernel);
+        device_free(param[i].attention.attention_output_weight.weight_scale);
+        device_free(param[i].ffn_resnorm.gamma);
+        device_free(param[i].ffn.w1_weight.kernel);
+        device_free(param[i].ffn.w1_weight.weight_scale);
+        device_free(param[i].ffn.w2_weight.kernel);
+        device_free(param[i].ffn.w2_weight.weight_scale);
+        device_free(param[i].ffn.w3_weight.kernel);
+        device_free(param[i].ffn.w3_weight.weight_scale);
+    }
 
+    device_free(decoding_params.embedding_table);
+    device_free(decoding_params.freq_cis);
+    device_free(decoding_params.prompt_sequence_length);
+    device_free(decoding_params.prompt_tokens);
+    device_free(decoding_params.prompt_tokens_mask);
+    device_free(decoding_params.decodingnorm.gamma);
+    device_free(decoding_params.output_weight.kernel);
+    device_free(decoding_params.output_ids);
+    device_free(decoding_params.sequence_length);
 
     delete[] param;
     delete[] h_prompt_sequence_length;
     delete[] h_prompt_tokens_mask;
+    delete[] h_word_ids;
+    delete[] h_seq_lengths;
+    delete[] h_prompt_tokens;
     delete decoding;
     return;
 }

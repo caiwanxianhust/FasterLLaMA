@@ -88,13 +88,14 @@ namespace tinycudallama
         int int_buf_size = word_ids_buf_size + topk_ids_buf_size + topp_id_vals_buf_size + topp_sorted_id_vals_buf_size +
                            topp_offset_buf_size;
 
+#ifndef NDEBUG
         size_t d_mem_size = sizeof(DataType_) * datatype_buf_size +
                             sizeof(float) * float_buf_size +
                             sizeof(int) * int_buf_size +
                             sizeof(bool) * finished_buf_size +
                             sizeof(char) * decoder_workspace_size +
                             args_.temp_storage_size_;
-#ifndef NDEBUG
+
         printf("[FL][INFO] the decoding sampling device memory : %zu GB\n", d_mem_size / 1024 / 1024);
 #endif
 

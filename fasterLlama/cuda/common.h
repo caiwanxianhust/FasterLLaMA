@@ -22,16 +22,16 @@ namespace tinycudallama
     template <typename T>
     struct ResNormWeight
     {
-        const T *gamma = nullptr;
+        T *gamma = nullptr;
         float eps = 1e-5f;
     };
 
     template <typename T, typename WeightType>
     struct DenseWeight
     {
-        const WeightType *kernel = nullptr;
-        const T *bias = nullptr;
-        const float *weight_scale = nullptr;
+        WeightType *kernel = nullptr;
+        T *bias = nullptr;
+        float *weight_scale = nullptr;
     };
 
     template <typename T, typename WeightType>
