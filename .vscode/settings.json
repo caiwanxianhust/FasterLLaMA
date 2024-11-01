@@ -27,6 +27,7 @@
         "iosfwd": "cpp",
         "cstdint": "cpp",
         "cmath": "cpp",
-        "sstream": "cpp"
+        "sstream": "cpp",
+        "stdexcept": "cpp"
     }
 }
