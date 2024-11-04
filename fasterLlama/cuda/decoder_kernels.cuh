@@ -2,7 +2,7 @@
 
 #include <cuda_fp16.h>
 
-namespace tinycudallama
+namespace FasterLLaMA
 {
 
      /** resNorm、量化

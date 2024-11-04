@@ -3,7 +3,7 @@
 #include <cub/cub.cuh>
 #include "cuda_kernels.cuh"
 
-namespace tinycudallama
+namespace FasterLLaMA
 {
     namespace
     {

@@ -3,7 +3,7 @@
 #include "utils.h"
 #include <cstdlib>
 
-namespace tinycudallama
+namespace FasterLLaMA
 {
     template <OperationType OpType_, OperationType QuantizationType>
     OpenDecoder<OpType_, QuantizationType>::OpenDecoder(int batch_size, int max_prompt_len, int max_gen_len,
@@ -377,4 +377,4 @@ namespace tinycudallama
 
     template class DecoderInitParam<half, int8_t>;
 
-} // namespace tinycudallama
+} // namespace FasterLLaMA

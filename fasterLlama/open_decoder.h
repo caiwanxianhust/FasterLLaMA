@@ -2,7 +2,7 @@
 
 #include "common.h"
 
-namespace tinycudallama
+namespace FasterLLaMA
 {
     
     template <typename T, typename WeightType>
@@ -78,4 +78,4 @@ namespace tinycudallama
         ~OpenDecoder();
     };
 
-} // namespace tinycudallama
+} // namespace FasterLLaMA

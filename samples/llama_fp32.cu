@@ -108,8 +108,8 @@ void decoding_sample(const int batch_size, const int candidate_num, const float 
     CHECK_CUDA_ERROR(cudaStreamCreate(&stream));
     CHECK_CUBLAS_STATUS(cublasSetStream(cublasHandle, stream));
 
-    tinycudallama::Allocator<tinycudallama::AllocatorType::CUDA> allocator(0);
-    tinycudallama::DecoderInitParam<T, int8_t> *param = new tinycudallama::DecoderInitParam<T, int8_t>[decoder_layers];
+    FasterLLaMA::Allocator<FasterLLaMA::AllocatorType::CUDA> allocator(0);
+    FasterLLaMA::DecoderInitParam<T, int8_t> *param = new FasterLLaMA::DecoderInitParam<T, int8_t>[decoder_layers];
 
     for (int i = 0; i < decoder_layers; i++)
     {
@@ -178,7 +178,7 @@ void decoding_sample(const int batch_size, const int candidate_num, const float 
         param[i].ffn.w3_weight.weight_scale = d_ffn_kernel3_scale;
     }
 
-    tinycudallama::DecodingInitParam<T> decoding_params;
+    FasterLLaMA::DecodingInitParam<T> decoding_params;
 
     T *d_embedding_table;
     float *d_freq_cis;
@@ -242,9 +242,9 @@ void decoding_sample(const int batch_size, const int candidate_num, const float 
     decoding_params.min_prompt_seq_len = min_prompt_seq_len;
     decoding_params.max_prompt_seq_len = max_prompt_seq_len;
 
-    const tinycudallama::OperationType type = sizeof(T) == sizeof(float) ? tinycudallama::OperationType::FP32 : tinycudallama::OperationType::FP16;
+    const FasterLLaMA::OperationType type = sizeof(T) == sizeof(float) ? FasterLLaMA::OperationType::FP32 : FasterLLaMA::OperationType::FP16;
 
-    tinycudallama::DecodingSampling<type> *decoding = new tinycudallama::DecodingSampling<type>(allocator, batch_size, max_prompt_len,
+    FasterLLaMA::DecodingSampling<type> *decoding = new FasterLLaMA::DecodingSampling<type>(allocator, batch_size, max_prompt_len,
                                                                                                 max_gen_len, head_num, size_per_head,
                                                                                                 vocab_size, decoder_layers,
                                                                                                 end_id, ffn_hidden_units, candidate_num,

@@ -1,7 +1,7 @@
 #include "decoding_sampling.h"
 #include "decoding_kernels.cuh"
 
-namespace tinycudallama
+namespace FasterLLaMA
 {
 
     template <OperationType OpType_>

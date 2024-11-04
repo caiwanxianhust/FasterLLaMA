@@ -2,7 +2,7 @@
 #include "cuda_kernels.cuh"
 #include "utils.h"
 
-namespace tinycudallama
+namespace FasterLLaMA
 {
 
     /** resNorm、量化

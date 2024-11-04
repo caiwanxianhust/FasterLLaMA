@@ -6,7 +6,7 @@
 #include <curand_kernel.h>
 #include <cfloat>
 
-namespace tinycudallama
+namespace FasterLLaMA
 {
 
     static inline __device__ int8_t float_to_int8_rn(float x);
@@ -96,4 +96,4 @@ namespace tinycudallama
         return result;
     }
 
-} // tinycudallama
+} // FasterLLaMA

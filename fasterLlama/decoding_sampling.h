@@ -4,7 +4,7 @@
 #include "open_decoder.h"
 #include "allocator.h"
 
-namespace tinycudallama
+namespace FasterLLaMA
 {
     template <typename T>
     class DecodingInitParam
@@ -122,4 +122,4 @@ namespace tinycudallama
         virtual ~DecodingSampling();
     };
 
-} // namespace tinycudallama
+} // namespace FasterLLaMA

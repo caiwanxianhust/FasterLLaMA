@@ -1,7 +1,7 @@
 #include "decoding_kernels.cuh"
 #include "utils.h"
 
-namespace tinycudallama
+namespace FasterLLaMA
 {
     /** resNorm
      * grid(batch_size * seq_len)  block(128)

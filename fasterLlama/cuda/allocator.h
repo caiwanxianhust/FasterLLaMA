@@ -4,7 +4,7 @@
 #include <vector>
 #include <cuda_runtime.h>
 
-namespace tinycudallama
+namespace FasterLLaMA
 {
 
   /**
@@ -88,4 +88,4 @@ namespace tinycudallama
     }
   };
 
-} // namespace tinycudallama
+} // namespace FasterLLaMA

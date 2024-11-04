@@ -3,7 +3,7 @@
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
 
-namespace tinycudallama
+namespace FasterLLaMA
 {
 
     enum class OperationType
