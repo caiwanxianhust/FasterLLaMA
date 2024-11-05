@@ -12,12 +12,6 @@ namespace FasterLLaMA
         FP16,
         INT8
     };
-    enum class AllocatorType
-    {
-        CUDA,
-        TF,
-        TH
-    };
 
     template <typename T>
     struct ResNormWeight

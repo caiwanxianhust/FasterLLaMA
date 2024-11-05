@@ -50,6 +50,13 @@ namespace FasterLLaMA
     return cudaSuccess;
   }
 
+  enum class AllocatorType
+  {
+    CUDA,
+    TF,
+    TH
+  };
+
   class IAllocator
   {
   public:
