@@ -44,14 +44,15 @@ namespace FasterLLaMA
         int head_num_;
         int size_per_head_;
         int hidden_units_;
+        int ffn_hidden_units_;
 
         /*  buf_size = batch_size * max_prompt_len_ * head_num * size_per_head
             cache_size = batch_size * head_num * total_len_ * size_per_head
          */
         int8_t *from_tensor_int8_buf_; // buf_size, [batch_size * seq_len, head_num * size_per_head]
         float *from_tensor_scale_buf_; // batch_size * max_prompt_len_, [batch_size, seq_len]
-        int32_t *query_buf_;           // buf_size, [batch_size * seq_len, head_num * size_per_head]
-        int32_t *key_buf_;             // buf_size, [batch_size * seq_len, head_num * size_per_head]
+        int32_t *query_buf_;           // [batch_size * seq_len, max(hidden_units, ffn_hidden_units)]
+        int32_t *key_buf_;             // [batch_size * seq_len, max(hidden_units, ffn_hidden_units)]
         int32_t *value_buf_;           // buf_size, [batch_size * seq_len, head_num * size_per_head]
         float *query_out_buf_;         // buf_size, [batch_size, head_num, seq_len, size_per_head]
         float *key_out_buf_;           // buf_size, [batch_size, head_num, seq_len, size_per_head]
@@ -62,7 +63,7 @@ namespace FasterLLaMA
         float *ffn_inter_scale_buf_;   // batch_size * max_prompt_len_, [batch_size, seq_len]
 
     public:
-        OpenDecoder(int batch_size, int max_prompt_len, int max_gen_len, int head_num, int size_per_head);
+        OpenDecoder(int batch_size, int max_prompt_len, int max_gen_len, int head_num, int size_per_head, int ffn_hidden_units);
 
         void initialize(DecoderInitParam<DataType_, weight_DataType_> param, char *buf);
 
@@ -72,7 +73,7 @@ namespace FasterLLaMA
          * key_cache_ value_cache_: cache_size, [batch_size, head_num, total_len_, size_per_head]
          * freq_cis_: [max_prompt_len_, size_per_head]
          */
-        void forward(const DataType_ *from_tensor, const float *freq_cis, float *key_cache_, float *value_cache_, int ffn_hidden_units,
+        void forward(const DataType_ *from_tensor, const float *freq_cis, float *key_cache_, float *value_cache_,
                      DataType_ *decoder_output, const int start_pos, const int seq_len);
 
         ~OpenDecoder();

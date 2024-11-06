@@ -560,7 +560,7 @@ namespace FasterLLaMA
 #ifndef NDEBUG
         PRINT_FUNC_NAME_();
 #endif
-        assert(size_per_head <= 1024);
+        assert(size_per_head <= 1024 && head_num >= 4);
         if (size_per_head <= 128)
         {
             int warp_num = 4;

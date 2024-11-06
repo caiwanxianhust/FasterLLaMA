@@ -7,9 +7,9 @@ namespace FasterLLaMA
 {
     template <OperationType OpType_, OperationType QuantizationType>
     OpenDecoder<OpType_, QuantizationType>::OpenDecoder(int batch_size, int max_prompt_len, int max_gen_len,
-                                                        int head_num, int size_per_head) : batch_size_(batch_size),
-                                                                                           max_prompt_len_(max_prompt_len), max_gen_len_(max_gen_len),
-                                                                                           head_num_(head_num), size_per_head_(size_per_head)
+                                                        int head_num, int size_per_head, int ffn_hidden_units) : batch_size_(batch_size), max_prompt_len_(max_prompt_len),
+                                                                                                                 max_gen_len_(max_gen_len), head_num_(head_num),
+                                                                                                                 size_per_head_(size_per_head), ffn_hidden_units_(ffn_hidden_units)
     {
 #ifndef NDEBUG
         PRINT_FUNC_NAME_();
@@ -30,11 +30,12 @@ namespace FasterLLaMA
 #endif
         param_ = param;
         int buf_size = batch_size_ * max_prompt_len_ * head_num_ * size_per_head_;
+        int reuse_buf_size = batch_size_ * max_prompt_len_ * max(ffn_hidden_units_, hidden_units_);
         from_tensor_int8_buf_ = (int8_t *)(buf);
         from_tensor_scale_buf_ = (float *)(from_tensor_int8_buf_ + buf_size);
         query_buf_ = (int32_t *)(from_tensor_scale_buf_ + batch_size_ * max_prompt_len_);
-        key_buf_ = (int32_t *)(query_buf_ + buf_size);
-        value_buf_ = (int32_t *)(key_buf_ + buf_size);
+        key_buf_ = (int32_t *)(query_buf_ + reuse_buf_size);
+        value_buf_ = (int32_t *)(key_buf_ + reuse_buf_size);
         query_out_buf_ = (float *)(value_buf_ + buf_size);
         key_out_buf_ = (float *)(query_out_buf_ + buf_size);
         value_out_fp_buf_ = (float *)(key_out_buf_ + buf_size);
@@ -56,8 +57,12 @@ namespace FasterLLaMA
         PRINT_FUNC_NAME_();
 #endif
         int buf_size = batch_size_ * max_prompt_len_ * hidden_units_;
-        int work_space_size = sizeof(int8_t) * buf_size + sizeof(float) * 4 * buf_size + sizeof(int32_t) * 3 * buf_size +
-                              sizeof(float) * 2 * batch_size_ * max_prompt_len_ + sizeof(DataType_) * buf_size +
+        int reuse_buf_size = batch_size_ * max_prompt_len_ * max(ffn_hidden_units_, hidden_units_);
+        int work_space_size = sizeof(int8_t) * buf_size +
+                              sizeof(float) * 4 * buf_size +
+                              sizeof(int32_t) * (buf_size + reuse_buf_size * 2) +
+                              sizeof(float) * 2 * batch_size_ * max_prompt_len_ +
+                              sizeof(DataType_) * buf_size +
                               sizeof(float) * batch_size_ * head_num_ * max_prompt_len_ * total_len_;
         return work_space_size;
     }
@@ -67,9 +72,9 @@ namespace FasterLLaMA
      * freq_cis_: [max_prompt_len_, size_per_head]
      */
     template <OperationType OpType_, OperationType QuantizationType>
-    void OpenDecoder<OpType_, QuantizationType>::forward(const DataType_ *from_tensor, const float *freq_cis, float *key_cache_, 
-    float *value_cache_, int ffn_hidden_units,
-                                                         DataType_ *decoder_output, const int start_pos, const int seq_len)
+    void OpenDecoder<OpType_, QuantizationType>::forward(const DataType_ *from_tensor, const float *freq_cis, float *key_cache_,
+                                                         float *value_cache_, DataType_ *decoder_output, const int start_pos,
+                                                         const int seq_len)
     {
 #ifndef NDEBUG
         PRINT_FUNC_NAME_();
@@ -199,7 +204,7 @@ namespace FasterLLaMA
             /**
              * softmax
              */
-            launchBlockSoftmaxKernel(qk_buf_, param_.attn_mask, batch_size_, head_num_, seq_len,
+            launchBlockSoftmaxKernel(qk_buf_, param_.attn_mask + start_pos * total_len_, batch_size_, head_num_, seq_len,
                                      seq_len + start_pos, total_len_, rsqrtf(static_cast<float>(size_per_head_)), param_.stream);
 
 #ifndef NDEBUG
@@ -273,7 +278,7 @@ namespace FasterLLaMA
             CHECK_CUDA_ERROR(cudaGetLastError());
 #endif
 
-            n = ffn_hidden_units;
+            n = ffn_hidden_units_;
             /**
              * w1 gemm, Reuse the query_buf_ as w1_buf_
              */
@@ -310,14 +315,14 @@ namespace FasterLLaMA
              */
             launchDequantizedSiluMultifyQuantized(from_tensor_int8_buf_, query_buf_, from_tensor_scale_buf_, param_.ffn.w1_weight.weight_scale,
                                                   key_buf_, param_.ffn.w3_weight.weight_scale, ffn_inter_scale_buf_,
-                                                  batch_size_ * seq_len, ffn_hidden_units, param_.stream);
+                                                  batch_size_ * seq_len, ffn_hidden_units_, param_.stream);
 
 #ifndef NDEBUG
             cudaDeviceSynchronize();
             CHECK_CUDA_ERROR(cudaGetLastError());
 #endif
 
-            k = ffn_hidden_units;
+            k = ffn_hidden_units_;
             n = hidden_units_;
             /**
              * w2 gemm, Reuse the value_buf_ as w2_buf_

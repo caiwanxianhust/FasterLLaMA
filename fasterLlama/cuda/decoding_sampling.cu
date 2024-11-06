@@ -41,7 +41,7 @@ namespace FasterLLaMA
         PRINT_FUNC_NAME_();
 #endif
 
-        decoder_ = new OpenDecoder<OpType_, OperationType::INT8>(batch_size, max_prompt_len, max_gen_len, head_num, size_per_head);
+        decoder_ = new OpenDecoder<OpType_, OperationType::INT8>(batch_size, max_prompt_len, max_gen_len, head_num, size_per_head, ffn_hidden_units);
 
         int from_tensor_size = args_.batch_size_ * args_.max_prompt_len_ * args_.hidden_units_; // type T
         int decoder_workspace_size = decoder_->getWorkspaceSize();
@@ -254,7 +254,6 @@ namespace FasterLLaMA
                 decoder_->forward(from_tensor_[from_id], decoding_params.freq_cis,
                                   K_cache_ + layer * cache_size,
                                   V_cache_ + layer * cache_size,
-                                  args_.ffn_hidden_units_,
                                   from_tensor_[out_id], prev_pos, cur_seq_len);
 
 #ifndef NDEBUG
