@@ -205,7 +205,7 @@ namespace FasterLLaMA
 
     template <typename T>
     __global__ void embeddingLookupKernel(T *__restrict__ from_tensor, const T *__restrict__ embedding_table,
-                                          const int *__restrict__ word_ids, const int hidden_units)
+                                          const int *__restrict__ word_ids, const int max_len, const int hidden_units)
     {
         const int token_id = blockIdx.x;
         const int batch_id = blockIdx.y;
@@ -213,7 +213,7 @@ namespace FasterLLaMA
         for (int tid = threadIdx.x; tid < hidden_units; tid += blockDim.x)
         {
             write_pos = tid + token_id * hidden_units + batch_id * gridDim.x * hidden_units;
-            lookup_pos = word_ids[batch_id * gridDim.x + token_id] * hidden_units + tid;
+            lookup_pos = word_ids[batch_id * max_len + token_id] * hidden_units + tid;
             // 1. lookup the table
             // 2. multiply hidden_dim**0.5
             from_tensor[write_pos] = embedding_table[lookup_pos] * (T)sqrtf(float(hidden_units));
@@ -222,7 +222,7 @@ namespace FasterLLaMA
 
     template <>
     __global__ void embeddingLookupKernel(half *__restrict__ from_tensor, const half *__restrict__ embedding_table,
-                                          const int *__restrict__ word_ids, const int hidden_units)
+                                          const int *__restrict__ word_ids, const int max_len, const int hidden_units)
     {
         const int token_id = blockIdx.x;
         const int batch_id = blockIdx.y;
@@ -230,7 +230,7 @@ namespace FasterLLaMA
         for (int tid = threadIdx.x; tid < hidden_units; tid += blockDim.x)
         {
             write_pos = tid + token_id * hidden_units + batch_id * gridDim.x * hidden_units;
-            lookup_pos = word_ids[batch_id * gridDim.x + token_id] * hidden_units + tid;
+            lookup_pos = word_ids[batch_id * max_len + token_id] * hidden_units + tid;
             // 1. lookup the table
             // 2. multiply hidden_dim**0.5
             from_tensor[write_pos] = __float2half(__half2float(embedding_table[lookup_pos]) * sqrtf(float(hidden_units)));
@@ -239,7 +239,7 @@ namespace FasterLLaMA
 
     template <typename T>
     void launchEmbeddingLookupKernel(T *__restrict__ from_tensor, const T *__restrict__ embedding_table, const int *__restrict__ word_ids,
-                                     const int batch_size, const int cur_seq_len, const int hidden_units,
+                                     const int batch_size, const int cur_seq_len, const int max_len, const int hidden_units,
                                      cudaStream_t stream)
     {
 #ifndef NDEBUG
@@ -247,7 +247,7 @@ namespace FasterLLaMA
 #endif
         dim3 grid(cur_seq_len, batch_size);
         dim3 block(256);
-        embeddingLookupKernel<T><<<grid, block, 0, stream>>>(from_tensor, embedding_table, word_ids, hidden_units);
+        embeddingLookupKernel<T><<<grid, block, 0, stream>>>(from_tensor, embedding_table, word_ids, max_len, hidden_units);
     }
 
     /** 取 logits[:, -1, :] 存入 step_logits，并顺便进行停止符判断
@@ -624,11 +624,11 @@ namespace FasterLLaMA
 
     template void launchEmbeddingLookupKernel(float *__restrict__ from_tensor, const float *__restrict__ embedding_table,
                                               const int *__restrict__ word_ids, const int batch_size, const int cur_seq_len,
-                                              const int hidden_units, cudaStream_t stream);
+                                              const int max_len, const int hidden_units, cudaStream_t stream);
     
     template void launchEmbeddingLookupKernel(half *__restrict__ from_tensor, const half *__restrict__ embedding_table,
                                               const int *__restrict__ word_ids, const int batch_size, const int cur_seq_len,
-                                              const int hidden_units, cudaStream_t stream);
+                                              const int max_len, const int hidden_units, cudaStream_t stream);
 
     template void launchTopKSamplingKernel(float *__restrict__ log_probs, int *__restrict__ topk_tmp_id_buf,
                                            float *__restrict__ topk_tmp_val_buf, int *__restrict__ ids,

@@ -209,7 +209,8 @@ namespace FasterLLaMA
 #endif
                 // prompt phase, prompt_tokens[:, :cur_pos] is embedded to from_tensor which shape is [batch_size, cur_seq_len, hidden_units]
                 launchEmbeddingLookupKernel(from_tensor_[0], decoding_params.embedding_table, decoding_params.prompt_tokens,
-                                            args_.batch_size_, cur_seq_len, args_.hidden_units_, decoding_params.stream);
+                                            args_.batch_size_, cur_seq_len, decoding_params.max_prompt_seq_len, 
+                                            args_.hidden_units_, decoding_params.stream);
             }
             else
             {
@@ -219,7 +220,7 @@ namespace FasterLLaMA
                 // generation phase, word_ids_buf_ is embedded to from_tensor which shape is [batch_size, hidden_units]
                 launchEmbeddingLookupKernel(from_tensor_[0], decoding_params.embedding_table,
                                             word_ids_buf_ + (step - 2) * args_.batch_size_,
-                                            args_.batch_size_, 1, args_.hidden_units_, decoding_params.stream);
+                                            args_.batch_size_, 1, 1, args_.hidden_units_, decoding_params.stream);
             }
 
 #ifndef NDEBUG

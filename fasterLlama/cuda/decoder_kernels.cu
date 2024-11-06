@@ -1299,7 +1299,7 @@ namespace FasterLLaMA
         }
     }
 
-    /**反量化、残差结构、量化
+    /**反量化、残差结构、ResNorm、量化
      * grid(seq_len * batch_size) block(128)
      * norm_out: [batch_size, seq_len, hidden_units]
      * ffn_tensor: [batch_size, seq_len, hidden_units]
@@ -1358,7 +1358,7 @@ namespace FasterLLaMA
         }
     }
 
-    /**反量化、残差结构、量化
+    /**反量化、残差结构、ResNorm、量化
      * grid(seq_len * batch_size) block(128)
      * norm_out: [batch_size, seq_len, hidden_units]
      * ffn_tensor: [batch_size, seq_len, hidden_units]
