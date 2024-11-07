@@ -603,7 +603,6 @@ namespace FasterLLaMA
         for (int tid = threadIdx.x; tid < sequence_length[blockIdx.x]; tid += blockDim.x)
         {
             gen_ids[blockIdx.x * total_len + tid] = word_ids_buf[(offset + tid) * batch_size + blockIdx.x];
-            // printf("batch_id: %d tid: %d  word_id: %d\n", blockIdx.x, tid, gen_ids[blockIdx.x * total_len + tid]);
         }
     }
 
