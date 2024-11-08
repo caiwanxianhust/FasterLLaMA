@@ -20,7 +20,7 @@ FasterLLaMA v1.0 基于 CUDA、cuBLAS、CUB 等 Nvidia 官方库实现，目前�
 ![](https://mmbiz.qpic.cn/sz_mmbiz_png/GJUG0H1sS5qX4u3gKYjsOZ7r3ib6Jk02RkszQibYbxMpzTOPryIsOxonbFgQicponrNVqWCrIvZiasb0heJcevSic3g/640?wx_fmt=png&amp;from=appmsg)
 
 下面是 Decoding 模型的整体架构图：
-![](https://mmbiz.qpic.cn/sz_mmbiz_png/GJUG0H1sS5qX4u3gKYjsOZ7r3ib6Jk02RdlQvOO3VpWo7Z3icRXiat9UOE6lAkwyiaETUsP34h7DGFgZ3s6NLtrfvQ/640?wx_fmt=png&amp;from=appmsg)
+![](https://mmbiz.qpic.cn/sz_mmbiz_png/GJUG0H1sS5okzmlo35c3o3ibDdV7jLkLp6WL1ibGpZemlnWpgZaXxJjeTicicbzK2bQu5gqfq6SUTRbYXx7ibKAtYwg/640?wx_fmt=png&amp;from=appmsg)
 
 源码地址如下，有兴趣的读者可以前往下载：
 > https://github.com/caiwanxianhust/FasterLLaMA
